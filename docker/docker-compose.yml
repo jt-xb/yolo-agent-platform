@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  # 后端服务
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    container_name: yolo-agent-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../data:/app/data
+      - ../logs:/app/logs
+      - ./.env:/app/backend/.env  # 挂载API Key配置
+    environment:
+      - DEBUG=true
+      - HOST=0.0.0.0
+      - PORT=8000
+    networks:
+      - yolo-network
+    restart: unless-stopped
+
+  # 前端服务
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/frontend.Dockerfile
+    container_name: yolo-agent-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - yolo-network
+    restart: unless-stopped
+
+networks:
+  yolo-network:
+    driver: bridge
