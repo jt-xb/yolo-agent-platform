@@ -634,7 +634,9 @@ export default {
             }
           })
         }
-        drawMetricsChart()
+        // Debounce canvas redraws to avoid excessive rendering during rapid metric updates
+        clearTimeout(drawMetricsChart._timer)
+        drawMetricsChart._timer = setTimeout(() => drawMetricsChart(), 300)
       })
 
       eventSource.addEventListener('status', (e) => {

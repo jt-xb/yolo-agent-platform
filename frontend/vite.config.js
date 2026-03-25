@@ -24,4 +24,20 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    target: 'es2015',
+    minify: 'esbuild',
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'element-plus': ['element-plus'],
+          'vue-vendor': ['vue', 'vue-router'],
+        },
+        chunkFileNames: 'assets/js/[name]-[hash].js',
+        entryFileNames: 'assets/js/[name]-[hash].js',
+        assetFileNames: 'assets/[ext]/[name]-[hash].[ext]',
+      },
+    },
+    chunkSizeWarningLimit: 1000,
+  },
 })
