@@ -81,6 +81,7 @@ class Task(Base):
     # 关联
     logs = relationship("TaskLog", back_populates="task", cascade="all, delete-orphan")
     metrics = relationship("TaskMetric", back_populates="task", cascade="all, delete-orphan")
+    iterations = relationship("TaskIteration", back_populates="task", cascade="all, delete-orphan")
     
     def to_dict(self):
         return {
@@ -174,6 +175,44 @@ class TaskMetric(Base):
             "precision": self.precision,
             "recall": self.recall,
             "gpu_memory_mb": self.gpu_memory_mb,
+        }
+
+
+class TaskIteration(Base):
+    """训练迭代配置记录"""
+    __tablename__ = "task_iterations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(String(64), ForeignKey("tasks.task_id"), nullable=False)
+    iteration = Column(Integer, nullable=False)
+    yolo_model = Column(String(32), nullable=True)
+    epochs = Column(Integer, nullable=True)
+    batch_size = Column(Integer, nullable=True)
+    map50 = Column(Float, nullable=True)
+    map50_95 = Column(Float, nullable=True)
+    precision = Column(Float, nullable=True)
+    recall = Column(Float, nullable=True)
+    decision = Column(String(32), nullable=True)
+    config_snapshot = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    task = relationship("Task", back_populates="iterations")
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "task_id": self.task_id,
+            "iteration": self.iteration,
+            "yolo_model": self.yolo_model,
+            "epochs": self.epochs,
+            "batch_size": self.batch_size,
+            "map50": self.map50,
+            "map50_95": self.map50_95,
+            "precision": self.precision,
+            "recall": self.recall,
+            "decision": self.decision,
+            "config_snapshot": self.config_snapshot,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 
 

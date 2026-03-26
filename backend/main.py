@@ -3,6 +3,12 @@ FastAPI 应用入口
 YOLO自动化训推平台 - 后端服务
 """
 import asyncio
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env file from backend directory
+load_dotenv(Path(__file__).parent / ".env")
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

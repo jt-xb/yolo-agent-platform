@@ -4,6 +4,7 @@
 import uuid
 import time
 import threading
+from pathlib import Path
 from datetime import datetime
 from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
@@ -121,7 +122,7 @@ def _update_task_progress(db: Session, task: Task, progress: float, status: str 
     db.commit()
 
 
-def _run_agent_loop_background(task_id: str, description: str, class_names: List[str]):
+def _run_agent_loop_background(task_id: str, description: str, class_names: List[str], dataset_id: str = None):
     """
     后台运行 Agent 训练循环（真正的训练→评估→迭代流程）
     """
@@ -130,7 +131,7 @@ def _run_agent_loop_background(task_id: str, description: str, class_names: List
     db = SessionLocal()
     try:
         # 启动 Agent 训练循环
-        loop = start_agent_training_loop(task_id, description, class_names)
+        loop = start_agent_training_loop(task_id, description, class_names, dataset_id)
 
         task = db.query(Task).filter(Task.task_id == task_id).first()
         if not task:
@@ -282,11 +283,18 @@ def create_task(request: dict, db: Session = Depends(get_db)):
         else:
             class_names = ["object"]
 
+    # 获取数据集路径
+    dataset_id = request.get("dataset_id", "")
+    if dataset_id:
+        data_path = str(settings.data_dir / "datasets" / dataset_id)
+    else:
+        data_path = request.get("data_path", "")
+
     task = Task(
         task_id=task_id,
         name=request.get("name", request.get("description", "新任务")[:50]),
         description=request.get("description", ""),
-        data_path=request.get("data_path", ""),
+        data_path=data_path,
         status="pending",
         progress=0.0,
         yolo_model=settings.default_yolo_model,
@@ -447,6 +455,11 @@ def start_task(task_id: str, background_tasks: BackgroundTasks, db: Session = De
     # 获取类别
     class_names = task.training_config.get("class_names", ["object"]) if task.training_config else ["object"]
 
+    # 获取数据集 ID
+    dataset_id = None
+    if task.data_path:
+        dataset_id = Path(task.data_path).name
+
     task.status = "training"
     task.started_at = datetime.utcnow()
     db.commit()
@@ -459,7 +472,8 @@ def start_task(task_id: str, background_tasks: BackgroundTasks, db: Session = De
         _run_agent_loop_background,
         task_id,
         task.description or task.name,
-        class_names
+        class_names,
+        dataset_id
     )
 
     return {

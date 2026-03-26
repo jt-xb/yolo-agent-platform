@@ -113,6 +113,16 @@
             placeholder="例如：安全帽检测"
           />
         </el-form-item>
+        <el-form-item label="数据集">
+          <el-select v-model="createForm.datasetId" style="width: 100%">
+            <el-option
+              v-for="ds in datasets"
+              :key="ds.id"
+              :label="ds.name"
+              :value="ds.id"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item label="任务描述">
           <el-input
             v-model="createForm.description"
@@ -244,8 +254,10 @@ import { ElMessage } from 'element-plus'
 import StatusBadge from '../components/common/StatusBadge.vue'
 import EmptyState from '../components/common/EmptyState.vue'
 import { getTasks, createTask as apiCreateTask, startTask, stopTask, getTaskLogs, getTaskMetrics, getTaskIterations, createTaskStream } from '../api/tasks'
+import { getDatasets } from '../api/datasets'
 
 const tasks = ref([])
+const datasets = ref([])
 const loading = ref(true)
 const showCreateDialog = ref(false)
 const showDetailDialog = ref(false)
@@ -260,9 +272,22 @@ const createForm = ref({
   name: '',
   description: '',
   classes: '',
+  datasetId: 'demo',
   yolo_model: 'yolov8n',
   epochs: 100,
 })
+
+async function loadDatasets() {
+  try {
+    const data = await getDatasets()
+    datasets.value = data.datasets || []
+    if (datasets.value.length && !createForm.value.datasetId) {
+      createForm.value.datasetId = datasets.value[0].id
+    }
+  } catch (e) {
+    datasets.value = [{ id: 'demo', name: '演示数据集' }]
+  }
+}
 
 async function loadTasks() {
   try {
@@ -291,12 +316,13 @@ async function createTask() {
       name: createForm.value.name,
       description: createForm.value.description,
       class_names: classList,
+      dataset_id: createForm.value.datasetId,
       yolo_model: createForm.value.yolo_model,
       epochs: createForm.value.epochs,
     })
     ElMessage.success('任务创建成功')
     showCreateDialog.value = false
-    createForm.value = { name: '', description: '', classes: '', yolo_model: 'yolov8n', epochs: 100 }
+    createForm.value = { name: '', description: '', classes: '', datasetId: createForm.value.datasetId || 'demo', yolo_model: 'yolov8n', epochs: 100 }
     await loadTasks()
   } catch (e) {
     ElMessage.error('创建失败: ' + e.message)
@@ -382,7 +408,9 @@ function formatTime(ts) {
   return new Date(ts).toLocaleTimeString()
 }
 
-onMounted(loadTasks)
+onMounted(async () => {
+  await Promise.all([loadTasks(), loadDatasets()])
+})
 onUnmounted(() => { if (stream) stream.close() })
 </script>
 

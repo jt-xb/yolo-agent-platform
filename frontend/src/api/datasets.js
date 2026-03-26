@@ -17,6 +17,17 @@ export async function getDemoDataset() {
   return request('/datasets/demo')
 }
 
+export async function createDataset(name) {
+  return request('/datasets/create', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  })
+}
+
+export async function deleteDataset(datasetId) {
+  return request(`/datasets/${datasetId}`, { method: 'DELETE' })
+}
+
 export async function uploadImages(datasetId, files) {
   const formData = new FormData()
   files.forEach(f => formData.append('files', f))
@@ -28,6 +39,13 @@ export async function uploadImages(datasetId, files) {
 
 export async function deleteImage(imageId) {
   return request(`/datasets/image/${imageId}`, { method: 'DELETE' })
+}
+
+export async function saveImageAnnotations(imageId, boxes) {
+  return request(`/datasets/image/${imageId}/annotations`, {
+    method: 'POST',
+    body: JSON.stringify({ boxes }),
+  })
 }
 
 export async function autoLabelDinoSam(data) {

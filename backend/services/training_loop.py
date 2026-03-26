@@ -95,10 +95,11 @@ class AgentTrainingLoop:
     5. 重复直到满足条件或达到上限
     """
 
-    def __init__(self, task_id: str, task_description: str, class_names: List[str]):
+    def __init__(self, task_id: str, task_description: str, class_names: List[str], dataset_id: str = None):
         self.task_id = task_id
         self.task_description = task_description
         self.class_names = class_names
+        self.dataset_id = dataset_id
 
         self.iterations: List[TrainingIteration] = []
         self.current_iteration: Optional[TrainingIteration] = None
@@ -414,7 +415,13 @@ class AgentTrainingLoop:
         ]
 
         # 使用真实的数据集路径
-        dataset_path = Path("/tmp/yolo_demo_dataset")
+        if self.dataset_id:
+            # 优先使用用户选择的数据集
+            dataset_path = Path(settings.data_dir) / "datasets" / self.dataset_id
+            if not dataset_path.exists():
+                dataset_path = Path("/tmp") / self.dataset_id
+        else:
+            dataset_path = Path("/tmp/yolo_demo_dataset")
         img_dir = dataset_path / "images" / "train"
         lbl_dir = dataset_path / "labels" / "train"
 
@@ -643,10 +650,11 @@ _active_loops: Dict[str, AgentTrainingLoop] = {}
 def start_agent_training_loop(
     task_id: str,
     task_description: str,
-    class_names: List[str]
+    class_names: List[str],
+    dataset_id: str = None
 ) -> AgentTrainingLoop:
     """启动 Agent 训练循环"""
-    loop = AgentTrainingLoop(task_id, task_description, class_names)
+    loop = AgentTrainingLoop(task_id, task_description, class_names, dataset_id)
     _active_loops[task_id] = loop
     return loop
 

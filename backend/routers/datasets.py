@@ -5,7 +5,7 @@ import os
 import shutil
 import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File, Body
 from typing import Annotated
 from sqlalchemy.orm import Session
@@ -698,11 +698,12 @@ def merge_datasets(
     }
 
 
-@router.get("/all")
-def list_all_datasets():
-    """列出所有已导入的数据集（从 /tmp/ds_* 目录）"""
+def _scan_dataset_dir(base_path: Path):
+    """扫描一个目录，返回数据集列表"""
     datasets = []
-    for p in sorted(Path("/tmp").glob("ds_*")):
+    if not base_path.exists():
+        return datasets
+    for p in sorted(base_path.iterdir()):
         if not p.is_dir():
             continue
         imgs = {}
@@ -724,6 +725,17 @@ def list_all_datasets():
             "test_count": imgs.get("test", 0),
             "class_names": names or ["object"],
         })
+    return datasets
+
+
+@router.get("/all")
+def list_all_datasets():
+    """列出所有已导入的数据集（从 /tmp/ds_* 和 data/datasets/ 目录）"""
+    datasets = []
+    # 扫描 /tmp/ds_* 目录
+    datasets.extend(_scan_dataset_dir(Path("/tmp")))
+    # 扫描 data/datasets/ 目录
+    datasets.extend(_scan_dataset_dir(settings.datasets_dir))
     # 加入 demo
     demo = get_demo_dataset()
     if demo.get("success"):
@@ -793,3 +805,124 @@ def get_dataset_file(dataset_id: str, split: str, filename: str):
         raise HTTPException(status_code=404, detail="文件不存在")
     from fastapi.responses import FileResponse
     return FileResponse(str(p), media_type="image/jpeg")
+
+
+@router.post("/create")
+def create_dataset(name: str = Body(..., embed=True)):
+    """
+    创建一个新的空数据集
+    """
+    import re
+    # 生成安全的 dataset_id
+    safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', name)
+    dataset_id = f"ds_{safe_name}_{uuid.uuid4().hex[:6]}"
+    dataset_path = Path(f"/tmp/{dataset_id}")
+
+    # 创建目录结构
+    for split in ["train", "val", "test"]:
+        (dataset_path / "images" / split).mkdir(parents=True, exist_ok=True)
+        (dataset_path / "labels" / split).mkdir(parents=True, exist_ok=True)
+
+    return {
+        "success": True,
+        "dataset_id": dataset_id,
+        "message": f"数据集 '{name}' 创建成功",
+        "dataset": {
+            "id": dataset_id,
+            "name": name,
+            "path": str(dataset_path),
+            "total_images": 0,
+            "train_count": 0,
+            "val_count": 0,
+            "test_count": 0,
+            "class_names": ["object"],
+        }
+    }
+
+
+@router.delete("/{dataset_id}")
+def delete_dataset(dataset_id: str):
+    """
+    删除数据集
+    """
+    if dataset_id == "demo":
+        return {"success": False, "message": "演示数据集无法删除"}
+
+    dataset_path = Path(f"/tmp/{dataset_id}")
+    if not dataset_path.exists():
+        raise HTTPException(status_code=404, detail="数据集不存在")
+
+    try:
+        shutil.rmtree(dataset_path)
+        return {"success": True, "message": f"数据集 {dataset_id} 已删除"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@router.post("/image/{image_id}/annotations")
+def save_image_annotations(
+    image_id: str,
+    boxes: List[dict] = Body(...),
+):
+    """
+    保存图片的手动标注结果
+
+    boxes 格式: [{"class_id": 0, "bbox": [cx, cy, w, h]}, ...]
+    bbox 为 YOLO 归一化坐标 [cx, cy, w, h]
+    """
+    # 解析 image_id 找到对应的图片和数据集
+    # 格式可能是: "demo_image001" 或 "ds_xxx_image001" 或直接是 "image001" (for demo)
+    dataset_path = Path("/tmp/yolo_demo_dataset")
+
+    # 尝试在 demo 数据集找
+    img_path = None
+    for split in ["train", "val", "test"]:
+        img_dir = dataset_path / "images" / split
+        if img_dir.exists():
+            for ext in ['.jpg', '.jpeg', '.png', '.bmp']:
+                potential = img_dir / f"{image_id}{ext}"
+                if potential.exists():
+                    img_path = potential
+                    break
+        if img_path:
+            break
+
+    # 如果 demo 里没找到，尝试其他数据集
+    if not img_path:
+        for ds_dir in Path("/tmp").glob("ds_*"):
+            if not ds_dir.is_dir():
+                continue
+            for split in ["train", "val", "test"]:
+                img_dir = ds_dir / "images" / split
+                if img_dir.exists():
+                    for ext in ['.jpg', '.jpeg', '.png', '.bmp']:
+                        potential = img_dir / f"{image_id}{ext}"
+                        if potential.exists():
+                            img_path = potential
+                            dataset_path = ds_dir
+                            break
+            if img_path:
+                break
+
+    if not img_path:
+        raise HTTPException(status_code=404, detail="图片不存在")
+
+    # 保存标注文件
+    label_dir = dataset_path / "labels" / img_path.parent.name
+    label_dir.mkdir(parents=True, exist_ok=True)
+    label_path = label_dir / f"{img_path.stem}.txt"
+
+    lines = []
+    for box in boxes:
+        cid = box.get("class_id", 0)
+        bbox = box.get("bbox", [0, 0, 0, 0])
+        lines.append(f"{cid} {' '.join(str(round(v, 6)) for v in bbox)}")
+
+    label_path.write_text('\n'.join(lines))
+
+    return {
+        "success": True,
+        "image_id": image_id,
+        "boxes_saved": len(boxes),
+        "message": f"已保存 {len(boxes)} 个标注"
+    }
