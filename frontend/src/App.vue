@@ -1,394 +1,236 @@
 <template>
-  <div id="app">
-    <el-container>
-      <!-- 顶部导航 -->
+  <el-container class="app-layout">
+    <!-- Sidebar -->
+    <el-aside class="sidebar" :width="collapsed ? '64px' : '220px'">
+      <div class="sidebar-logo">
+        <span class="logo-icon">AI</span>
+        <span v-show="!collapsed" class="logo-text">YOLO Agent</span>
+      </div>
+
+      <el-menu
+        :default-active="route.path"
+        class="sidebar-menu"
+        :collapse="collapsed"
+        router
+      >
+        <el-menu-item index="/tasks">
+          <span class="menu-icon">T</span>
+          <template #title>训练任务</template>
+        </el-menu-item>
+        <el-menu-item index="/datasets">
+          <span class="menu-icon">D</span>
+          <template #title>数据集</template>
+        </el-menu-item>
+        <el-menu-item index="/models">
+          <span class="menu-icon">M</span>
+          <template #title>模型中心</template>
+        </el-menu-item>
+      </el-menu>
+
+      <div class="sidebar-footer">
+        <el-button text @click="collapsed = !collapsed" class="collapse-btn">
+          {{ collapsed ? '→' : '←' }}
+        </el-button>
+      </div>
+    </el-aside>
+
+    <!-- Main -->
+    <el-container class="main-container">
       <el-header class="header">
         <div class="header-left">
-          <div class="logo-area">
-            <span class="logo-icon">🤖</span>
-            <div class="logo-text">
-              <h1>YOLO Agent 平台</h1>
-              <span class="logo-subtitle">AI 驱动的自动化目标检测训练</span>
-            </div>
-          </div>
-        </div>
-        <div class="header-center">
-          <!-- Agent 状态概览 -->
-          <div class="agent-status-bar" v-if="agentStats">
-            <div class="agent-stat">
-              <span class="stat-icon">🎯</span>
-              <span class="stat-value">{{ agentStats.total_tasks }}</span>
-              <span class="stat-label">训练任务</span>
-            </div>
-            <div class="agent-stat" :class="{ active: agentStats.training_count > 0 }">
-              <span class="stat-icon">⚡</span>
-              <span class="stat-value">{{ agentStats.training_count }}</span>
-              <span class="stat-label">Agent 训练中</span>
-            </div>
-            <div class="agent-stat completed">
-              <span class="stat-icon">✅</span>
-              <span class="stat-value">{{ agentStats.completed_count }}</span>
-              <span class="stat-label">已完成</span>
-            </div>
-            <div class="agent-stat" v-if="agentStats.current_action">
-              <span class="stat-icon spinning">🔄</span>
-              <span class="stat-value current-action">{{ agentStats.current_action }}</span>
-              <span class="stat-label">Agent 正在</span>
-            </div>
-          </div>
+          <h1 class="page-title">{{ pageTitle }}</h1>
         </div>
         <div class="header-right">
-          <el-button @click="refreshStatus" :loading="loading" size="small">
-            🔄 刷新
-          </el-button>
+          <div class="agent-status">
+            <span class="status-dot"></span>
+            <span class="status-text">Agent Ready</span>
+          </div>
         </div>
       </el-header>
 
-      <el-container>
-        <!-- 侧边栏 -->
-        <el-aside width="220px" class="sidebar">
-          <div class="sidebar-header">
-            <span class="sidebar-title">导航菜单</span>
-          </div>
-          <el-menu :default-active="activeMenu" router class="sidebar-menu">
-            <el-menu-item index="/">
-              <template #title>
-                <span class="menu-icon">📋</span>
-                <span>任务管理</span>
-                <span class="menu-badge" v-if="agentStats?.training_count > 0">{{ agentStats.training_count }}</span>
-              </template>
-            </el-menu-item>
-            <el-menu-item index="/datasets">
-              <template #title>
-                <span class="menu-icon">📁</span>
-                <span>数据管理</span>
-              </template>
-            </el-menu-item>
-            <el-menu-item index="/models">
-              <template #title>
-                <span class="menu-icon">🤖</span>
-                <span>模型仓库</span>
-              </template>
-            </el-menu-item>
-            <el-menu-item index="/settings">
-              <template #title>
-                <span class="menu-icon">⚙️</span>
-                <span>系统设置</span>
-              </template>
-            </el-menu-item>
-          </el-menu>
-
-          <!-- Agent 说明卡片 -->
-          <div class="agent-info-card">
-            <div class="agent-info-header">
-              <span class="agent-avatar">🤖</span>
-              <span class="agent-name">Agent</span>
-            </div>
-            <p class="agent-desc">
-              平台内置 AI Agent，自动分析训练效果、智能调整参数、迭代优化模型，全程无需人工干预。
-            </p>
-            <div class="agent-features">
-              <div class="feature-item">🧠 智能参数调优</div>
-              <div class="feature-item">🔄 自动迭代优化</div>
-              <div class="feature-item">📊 实时效果评估</div>
-            </div>
-          </div>
-        </el-aside>
-
-        <!-- 主内容区 -->
-        <el-main class="main-content">
-          <router-view @agent-update="onAgentUpdate" />
-        </el-main>
-      </el-container>
+      <el-main class="main-content">
+        <router-view v-slot="{ Component }">
+          <transition name="fade" mode="out-in">
+            <component :is="Component" />
+          </transition>
+        </router-view>
+      </el-main>
     </el-container>
-  </div>
+  </el-container>
 </template>
 
-<script>
-import { ref, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
+<script setup>
+import { ref, computed } from 'vue'
+import { useRoute } from 'vue-router'
 
-export default {
-  name: 'App',
-  setup() {
-    const router = useRouter()
-    const activeMenu = ref('/')
-    const loading = ref(false)
-    const agentStats = ref({
-      total_tasks: 0,
-      training_count: 0,
-      completed_count: 0,
-      current_action: ''
-    })
+const route = useRoute()
+const collapsed = ref(false)
 
-    let pollInterval = null
-
-    const refreshStatus = async () => {
-      loading.value = true
-      try {
-        const res = await fetch('/api/tasks/')
-        if (res.ok) {
-          const data = await res.json()
-          const tasks = data.tasks || []
-          agentStats.value = {
-            total_tasks: tasks.length,
-            training_count: tasks.filter(t => t.status === 'training').length,
-            completed_count: tasks.filter(t => t.status === 'completed').length,
-            current_action: tasks.find(t => t.status === 'training')?.name || ''
-          }
-        }
-      } catch (e) {
-        // 后端未启动时静默处理
-      } finally {
-        loading.value = false
-      }
-    }
-
-    const onAgentUpdate = (stats) => {
-      agentStats.value = { ...agentStats.value, ...stats }
-    }
-
-    onMounted(() => {
-      activeMenu.value = router.currentRoute.value.path
-      refreshStatus()
-      // 每 5 秒刷新一次状态
-      pollInterval = setInterval(refreshStatus, 5000)
-    })
-
-    onUnmounted(() => {
-      if (pollInterval) clearInterval(pollInterval)
-    })
-
-    return {
-      activeMenu,
-      loading,
-      agentStats,
-      refreshStatus,
-      onAgentUpdate,
-    }
-  }
+const pageTitleMap = {
+  '/tasks': '训练任务中心',
+  '/datasets': '数据集管理',
+  '/models': '模型中心',
 }
+
+const pageTitle = computed(() => pageTitleMap[route.path] || 'YOLO Agent')
 </script>
 
 <style>
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+.app-layout {
+  min-height: 100vh;
 }
 
-body {
-  font-family: 'Helvetica Neue', Arial, sans-serif;
-  background: #f0f2f5;
+/* Sidebar */
+.sidebar {
+  background: var(--color-surface);
+  border-right: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  transition: width var(--transition-base);
+  overflow: hidden;
 }
 
-#app {
-  height: 100vh;
-}
-
-.header {
-  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-  color: white;
+.sidebar-logo {
+  height: var(--header-height);
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 0 24px;
-  height: 64px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-}
-
-.header-left {
-  display: flex;
-  align-items: center;
-}
-
-.logo-area {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
+  padding: 0 var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
 }
 
 .logo-icon {
-  font-size: 32px;
-}
-
-.logo-text h1 {
-  font-size: 20px;
-  font-weight: 600;
-  margin: 0;
-  line-height: 1.2;
-}
-
-.logo-subtitle {
-  font-size: 11px;
-  color: #a0aec0;
-  display: block;
-}
-
-.header-center {
-  flex: 1;
-  display: flex;
-  justify-content: center;
-}
-
-.agent-status-bar {
-  display: flex;
-  gap: 24px;
-  background: rgba(255,255,255,0.08);
-  padding: 8px 20px;
-  border-radius: 24px;
-  border: 1px solid rgba(255,255,255,0.1);
-}
-
-.agent-stat {
+  width: 32px;
+  height: 32px;
+  background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark));
+  color: white;
+  border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
-  gap: 6px;
-  opacity: 0.7;
-  transition: opacity 0.3s;
+  justify-content: center;
+  font-weight: var(--font-bold);
+  font-size: var(--text-sm);
+  flex-shrink: 0;
 }
 
-.agent-stat.active {
-  opacity: 1;
-}
-
-.agent-stat.completed .stat-icon {
-  color: #67c23a;
-}
-
-.stat-icon {
-  font-size: 16px;
-}
-
-.stat-value {
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.stat-label {
-  font-size: 11px;
-  color: #a0aec0;
-}
-
-.current-action {
-  font-size: 12px;
-  color: #409eff;
-  max-width: 150px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.logo-text {
+  font-weight: var(--font-semibold);
+  font-size: var(--text-md);
+  color: var(--color-text);
   white-space: nowrap;
 }
 
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-.spinning {
-  animation: spin 1s linear infinite;
-}
-
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.sidebar {
-  background: white;
-  border-right: 1px solid #e6e6e6;
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  overflow: hidden;
-}
-
-.sidebar-header {
-  padding: 16px 20px 8px;
-  border-bottom: 1px solid #f0f0f0;
-  flex-shrink: 0;
-}
-
-.sidebar-title {
-  font-size: 11px;
-  color: #999;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-}
-
 .sidebar-menu {
-  border-right: none;
   flex: 1;
-  min-height: 0;
-  overflow-y: auto;
+  border: none;
+  padding: var(--space-2) 0;
 }
 
-.sidebar-menu .el-menu-item {
-  height: 48px;
-  line-height: 48px;
+.sidebar-menu:not(.el-menu--collapse) {
+  width: 220px;
+}
+
+.el-menu-item {
+  height: 44px;
+  line-height: 44px;
+  margin: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+}
+
+.el-menu-item:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+
+.el-menu-item.is-active {
+  background: var(--color-primary-bg);
+  color: var(--color-primary);
+}
+
+.el-menu-item.is-active .menu-icon {
+  background: var(--color-primary);
+  color: white;
 }
 
 .menu-icon {
-  font-size: 18px;
-  margin-right: 10px;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--color-surface-2);
+  color: var(--color-text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-xs);
+  font-weight: var(--font-bold);
+  margin-right: var(--space-3);
 }
 
-.menu-badge {
-  background: #f56c6c;
-  color: white;
-  font-size: 10px;
-  padding: 2px 6px;
-  border-radius: 10px;
-  margin-left: auto;
+.sidebar-footer {
+  padding: var(--space-3);
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  justify-content: flex-end;
 }
 
-.agent-info-card {
-  margin: 16px;
-  margin-top: auto;
-  padding: 16px;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  border-radius: 12px;
-  color: white;
-  flex-shrink: 0;
+.collapse-btn {
+  color: var(--color-text-muted);
 }
 
-.agent-info-header {
+/* Main */
+.main-container {
+  flex-direction: column;
+}
+
+.header {
+  height: var(--header-height);
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
+  justify-content: space-between;
+  padding: 0 var(--space-6);
 }
 
-.agent-avatar {
-  font-size: 24px;
+.page-title {
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  color: var(--color-text);
 }
 
-.agent-name {
-  font-weight: 600;
-  font-size: 16px;
-}
-
-.agent-desc {
-  font-size: 12px;
-  line-height: 1.6;
-  opacity: 0.9;
-  margin-bottom: 12px;
-}
-
-.agent-features {
+.agent-status {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-secondary-bg);
+  border-radius: var(--radius-full);
 }
 
-.feature-item {
-  font-size: 12px;
-  opacity: 0.85;
+.status-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--color-secondary);
+  border-radius: 50%;
+  animation: pulse 2s infinite;
+}
+
+.status-text {
+  font-size: var(--text-sm);
+  color: var(--color-secondary);
+  font-weight: var(--font-medium);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 .main-content {
-  padding: 0;
-  background: #f0f2f5;
+  padding: var(--space-6);
+  background: var(--color-bg);
   overflow-y: auto;
 }
 </style>

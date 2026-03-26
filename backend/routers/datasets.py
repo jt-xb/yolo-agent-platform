@@ -6,7 +6,8 @@ import shutil
 import uuid
 from pathlib import Path
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File, Body
+from typing import Annotated
 from sqlalchemy.orm import Session
 
 from backend.core.database import get_db, Dataset
@@ -223,11 +224,7 @@ def delete_image(image_id: str):
 
 @router.post("/dino-sam-auto-label")
 async def dino_sam_auto_label(
-    task_description: str,
-    class_names: List[str],
-    dataset_id: str = "demo",
-    image_ids: Optional[List[str]] = None,
-    box_threshold: float = 0.25,
+    body: Annotated[dict, Body()],
 ):
     """
     使用 Grounding DINO + SAM 对数据集图片进行自动标注（真实 AI 标注）
@@ -245,6 +242,13 @@ async def dino_sam_auto_label(
         is_yolo_available,
         get_info,
     )
+
+    # 从 body 中提取参数
+    task_description = body.get("task_description", "")
+    class_names = body.get("class_names", [])
+    dataset_id = body.get("dataset_id", "demo")
+    image_ids = body.get("image_ids")
+    box_threshold = body.get("box_threshold", 0.25)
 
     info = get_info()
     mode = info.get("mode", "unknown")

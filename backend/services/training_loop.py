@@ -239,6 +239,7 @@ class AgentTrainingLoop:
     def _evaluate_and_decide(self, iteration: TrainingIteration) -> IterationDecision:
         """
         评估迭代结果，决定下一步
+        优先使用 LLM 分析，失败时回退到规则引擎
         """
         m = iteration.metrics = {
             "map50": iteration.map50,
@@ -247,20 +248,97 @@ class AgentTrainingLoop:
             "recall": iteration.recall,
         }
 
-        # 检查是否达标
-        map50_ok = m["map50"] >= self.requirements.map50_threshold
-        map95_ok = m["map50_95"] >= self.requirements.map50_95_threshold
-        prec_ok = m["precision"] >= self.requirements.precision_threshold
-        recall_ok = m["recall"] >= self.requirements.recall_threshold
-
-        all_ok = map50_ok and map95_ok and prec_ok and recall_ok
-
         # 检查是否是历史最佳
         if self.best_metrics is None or m["map50"] > self.best_metrics["map50"]:
             self.best_metrics = m.copy()
             self.best_iteration_id = iteration.iteration_id
 
-        # 决策
+        # ========== LLM 决策阶段 ==========
+        llm_used = False
+        llm_error_msg = None
+        try:
+            from backend.core.llm import get_llm_service
+            import json, re
+
+            system_prompt = """你是一位计算机视觉训练专家。分析 YOLO 训练结果，决定下一步行动。
+
+决策选项：
+- PASS: 所有指标达标 → 结束训练
+- FAIL_RETRY: 未达标但可以继续优化 → 调整配置重训
+- MAX_ITERATION: 已达最大迭代次数 → 结束训练
+- FAIL_STOP: 训练持续失败 → 停止
+
+请始终以 JSON 格式回复：
+{"decision": "PASS|FAIL_RETRY|MAX_ITERATION|FAIL_STOP", "reason": "原因说明", "adjustments": {"yolo_model": "yolov8n/m/s/l", "epochs": 100, "lr0": 0.01, ...}}
+如果不需要调整，adjustments 可为空对象 {}。
+"""
+            user_message = f"""训练迭代 {len(self.iterations)} 结果：
+- mAP50: {m.get('map50', 0):.4f}（目标: {self.requirements.map50_threshold}）
+- mAP95: {m.get('map50_95', 0):.4f}（目标: {self.requirements.map50_95_threshold}）
+- 精确率: {m.get('precision', 0):.4f}（目标: {self.requirements.precision_threshold}）
+- 召回率: {m.get('recall', 0):.4f}（目标: {self.requirements.recall_threshold}）
+
+当前迭代: {len(self.iterations)} / {self.requirements.max_iterations}
+当前配置: {iteration.config}
+"""
+            llm = get_llm_service()
+            response = llm.chat_with_system(system_prompt, user_message, temperature=0.3)
+
+            # 尝试从响应中提取 JSON（用正则找第一个 {...} 块）
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                decision_str = result.get("decision", "").strip().upper()
+                reason = result.get("reason", "LLM 决策")
+                adjustments = result.get("adjustments", {})
+
+                decision_map = {
+                    "PASS": IterationDecision.PASS,
+                    "FAIL_RETRY": IterationDecision.FAIL_RETRY,
+                    "MAX_ITERATION": IterationDecision.MAX_ITERATION,
+                    "FAIL_STOP": IterationDecision.FAIL_STOP,
+                }
+                decision = decision_map.get(decision_str)
+
+                if decision is not None:
+                    llm_used = True
+                    iteration.decision_reason = f"[LLM] {reason}"
+                    iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🤖 LLM 决策: {decision_str} — {reason}")
+
+                    if adjustments and decision == IterationDecision.FAIL_RETRY:
+                        iteration.adjusted_config = {**iteration.config, **adjustments}
+                        iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🔧 LLM 建议调整: {adjustments}")
+
+                    iteration.decision = decision
+
+                    if decision == IterationDecision.PASS:
+                        iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🎉 评估通过：模型达到上线标准")
+                    elif decision == IterationDecision.MAX_ITERATION:
+                        iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ 达到最大迭代次数")
+                    elif decision == IterationDecision.FAIL_STOP:
+                        iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 LLM 判断训练持续失败，停止")
+                    return decision
+                else:
+                    llm_error_msg = f"LLM 返回了未知决策: {decision_str}"
+            else:
+                llm_error_msg = f"LLM 响应无法解析为 JSON: {response[:200]}"
+        except ImportError:
+            llm_error_msg = "LLM 模块不可用"
+        except Exception as e:
+            llm_error_msg = f"LLM 调用失败: {str(e)}"
+
+        # ========== 回退到规则引擎 ==========
+        if llm_error_msg:
+            iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ {llm_error_msg}，使用规则引擎决策")
+            iteration.decision_reason = f"[规则引擎回退] {llm_error_msg}"
+
+        # 检查是否达标
+        map50_ok = m["map50"] >= self.requirements.map50_threshold
+        map95_ok = m["map50_95"] >= self.requirements.map50_95_threshold
+        prec_ok = m["precision"] >= self.requirements.precision_threshold
+        recall_ok = m["recall"] >= self.requirements.recall_threshold
+        all_ok = map50_ok and map95_ok and prec_ok and recall_ok
+
         if all_ok:
             iteration.decision = IterationDecision.PASS
             iteration.decision_reason = f"所有指标达标！mAP50={m['map50']:.3f}, mAP95={m['map50_95']:.3f}"
@@ -278,7 +356,6 @@ class AgentTrainingLoop:
         if not recall_ok:
             issues.append(f"召回率不足({m['recall']:.3f}<{self.requirements.recall_threshold})")
 
-        # 判断是否应该继续
         if len(self.iterations) >= self.requirements.max_iterations:
             iteration.decision = IterationDecision.MAX_ITERATION
             iteration.decision_reason = f"达到最大迭代次数({self.requirements.max_iterations}次)，选择历史最佳结果"
@@ -290,13 +367,11 @@ class AgentTrainingLoop:
         adjustment_reasons = []
 
         if not recall_ok:
-            # 召回不足 → 增加数据增强，减少正则
             new_config["epochs"] = min(new_config["epochs"] + 50, 300)
             new_config["lr0"] = min(new_config["lr0"] * 1.5, 0.03)
             adjustment_reasons.append("增加训练轮数和学习率以提升召回")
 
         if not prec_ok:
-            # 精确率不足 → 提高模型复杂度
             if new_config["yolo_model"] == "yolov8s":
                 new_config["yolo_model"] = "yolov8m"
             elif new_config["yolo_model"] == "yolov8m":
@@ -450,6 +525,28 @@ class AgentTrainingLoop:
                     pass
 
         analysis_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 数据集统计: {final_labeled}/{len(all_images)} 张已标注，共 {final_objects} 个目标")
+
+        # ========== LLM 数据分析建议 ==========
+        try:
+            from backend.core.llm import get_llm_service
+            dataset_summary = f"""数据集分析摘要：
+- 总图片数: {len(all_images)}
+- 已标注图片: {final_labeled}
+- 标注率: {final_labeled/len(all_images)*100:.1f}%（需要>50%才建议跳过自动标注）
+- 总目标框: {final_objects}
+- 类别列表: {', '.join(self.class_names)}
+
+是否应该使用自动标注？应该采用什么样的数据增强策略？"""
+            llm_response = get_llm_service().chat_with_system(
+                "你是一位计算机视觉数据工程师。分析这个数据集的质量，并给出训练策略建议。",
+                dataset_summary,
+                temperature=0.3,
+            )
+            # 只取前300字符避免日志过长
+            truncated = llm_response[:300].replace("\n", " ")
+            analysis_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🤖 LLM 数据分析: {truncated}")
+        except Exception as e:
+            analysis_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🤖 LLM 数据分析不可用: {str(e)[:100]}")
 
         # 生成 data.yaml（使用绝对路径），同时保存到任务专属目录供训练使用
         data_yaml_path = dataset_path / "data.yaml"

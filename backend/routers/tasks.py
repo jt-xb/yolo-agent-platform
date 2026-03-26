@@ -9,7 +9,7 @@ from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 
-from backend.core.database import get_db, Task, TaskLog, TaskMetric, GeneratedModel
+from backend.core.database import get_db, Task, TaskLog, TaskMetric, TaskIteration, GeneratedModel
 from backend.core.config import settings
 from backend.services.training_loop import (
     start_agent_training_loop,
@@ -175,6 +175,7 @@ def _run_agent_loop_background(task_id: str, description: str, class_names: List
                 metric = TaskMetric(
                     task_id=task_id,
                     epoch=current_iter,
+                    iteration=current_iter,
                     map50=iteration_data["metrics"].get("map50"),
                     map50_95=iteration_data["metrics"].get("map50_95"),
                     precision=iteration_data["metrics"].get("precision"),
@@ -183,6 +184,22 @@ def _run_agent_loop_background(task_id: str, description: str, class_names: List
                     val_loss=iteration_data["metrics"].get("val_loss"),
                 )
                 db.add(metric)
+
+                # 保存迭代配置到 task_iterations 表
+                iter_record = TaskIteration(
+                    task_id=task_id,
+                    iteration=current_iter,
+                    yolo_model=iteration_data.get("config", {}).get("yolo_model", task.yolo_model),
+                    epochs=iteration_data.get("config", {}).get("epochs", task.epochs),
+                    batch_size=iteration_data.get("config", {}).get("batch_size", task.batch_size),
+                    map50=iteration_data.get("metrics", {}).get("map50"),
+                    map50_95=iteration_data.get("metrics", {}).get("map50_95"),
+                    precision=iteration_data.get("metrics", {}).get("precision"),
+                    recall=iteration_data.get("metrics", {}).get("recall"),
+                    decision=iteration_data.get("decision", "pass"),
+                    config_snapshot=iteration_data.get("config", {}),
+                )
+                db.add(iter_record)
                 db.commit()
 
         # 执行训练循环
@@ -315,7 +332,25 @@ def get_task(task_id: str, db: Session = Depends(get_db)):
     task = db.query(Task).filter(Task.task_id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-    return task.to_dict()
+
+    result = task.to_dict()
+
+    # 添加 actual_config（从 TaskIteration 表获取实际训练时使用的配置）
+    last_iter = db.query(TaskIteration).filter(
+        TaskIteration.task_id == task_id
+    ).order_by(TaskIteration.iteration.desc()).first()
+
+    if last_iter:
+        result["actual_config"] = {
+            "yolo_model": last_iter.yolo_model,
+            "epochs": last_iter.epochs,
+            "batch_size": last_iter.batch_size,
+            "config_snapshot": last_iter.config_snapshot,
+        }
+    else:
+        result["actual_config"] = None
+
+    return result
 
 
 @router.get("/{task_id}/iterations")
@@ -336,6 +371,42 @@ def get_task_iterations(task_id: str, db: Session = Depends(get_db)):
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
 
+    # 优先从 TaskIteration 表查询真实的迭代配置
+    iterations_db = db.query(TaskIteration).filter(
+        TaskIteration.task_id == task_id
+    ).order_by(TaskIteration.iteration).all()
+
+    if iterations_db:
+        iterations = [{
+            "iteration_id": f"{task_id}_iter_{it.iteration}",
+            "iteration": it.iteration,
+            "config": it.config_snapshot or {},
+            "yolo_model": it.yolo_model,
+            "epochs": it.epochs,
+            "batch_size": it.batch_size,
+            "status": "completed",
+            "metrics": {
+                "map50": it.map50,
+                "map50_95": it.map50_95,
+                "precision": it.precision,
+                "recall": it.recall,
+            },
+            "decision": it.decision,
+        } for it in iterations_db]
+        return {
+            "task_id": task_id,
+            "current_iteration": len(iterations_db),
+            "status": task.status,
+            "best_metrics": {
+                "map50": task.map50,
+                "map50_95": task.map50_95,
+                "precision": task.precision,
+                "recall": task.recall,
+            },
+            "iterations": iterations,
+        }
+
+    # 回退：如果 TaskIteration 表没有数据，使用旧逻辑（兼容性）
     metrics = db.query(TaskMetric).filter(TaskMetric.task_id == task_id).order_by(TaskMetric.epoch).all()
 
     return {

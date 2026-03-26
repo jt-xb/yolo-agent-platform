@@ -1,0 +1,67 @@
+/* Fade */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity var(--transition-base);
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+/* Slide up */
+.slide-up-enter-active,
+.slide-up-leave-active {
+  transition: all var(--transition-base);
+}
+
+.slide-up-enter-from,
+.slide-up-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+/* Scale */
+.scale-enter-active,
+.scale-leave-active {
+  transition: all var(--transition-fast);
+}
+
+.scale-enter-from,
+.scale-leave-to {
+  opacity: 0;
+  transform: scale(0.95);
+}
+
+/* Dialog */
+.dialog-enter-active,
+.dialog-leave-active {
+  transition: all var(--transition-base);
+}
+
+.dialog-enter-from,
+.dialog-leave-to {
+  opacity: 0;
+}
+
+.dialog-enter-from .el-dialog,
+.dialog-leave-to .el-dialog {
+  transform: scale(0.95);
+  opacity: 0;
+}
+
+/* List item stagger */
+.list-enter-active,
+.list-leave-active {
+  transition: all var(--transition-base);
+}
+
+.list-enter-from,
+.list-leave-to {
+  opacity: 0;
+  transform: translateX(-10px);
+}
+
+.list-move {
+  transition: transform var(--transition-slow);
+}
