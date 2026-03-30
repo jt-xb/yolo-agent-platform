@@ -1,4 +1,4 @@
-import request from './index'
+import request, { createSSE } from './index'
 
 export async function getTasks(params = {}) {
   const qs = new URLSearchParams(params).toString()

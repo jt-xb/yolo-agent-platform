@@ -13,6 +13,11 @@ const router = createRouter({
       component: () => import('../views/TasksView.vue'),
     },
     {
+      path: '/agent',
+      name: 'Agent',
+      component: () => import('../views/AgentView.vue'),
+    },
+    {
       path: '/datasets',
       name: 'Datasets',
       component: () => import('../views/DatasetsView.vue'),

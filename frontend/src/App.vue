@@ -17,6 +17,10 @@
           <span class="menu-icon">T</span>
           <template #title>训练任务</template>
         </el-menu-item>
+        <el-menu-item index="/agent">
+          <span class="menu-icon">A</span>
+          <template #title>🤖 Agent训练</template>
+        </el-menu-item>
         <el-menu-item index="/datasets">
           <span class="menu-icon">D</span>
           <template #title>数据集</template>
@@ -72,6 +76,7 @@ const collapsed = ref(false)
 
 const pageTitleMap = {
   '/tasks': '训练任务中心',
+  '/agent': 'Agent 智能训练',
   '/datasets': '数据集管理',
   '/models': '模型中心',
   '/settings': '系统设置',
