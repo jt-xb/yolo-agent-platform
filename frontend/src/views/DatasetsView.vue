@@ -824,10 +824,15 @@ async function loadImages() {
       url: img.url || `/api/datasets/image/${img.id}`,
       num_objects: img.num_objects || img.boxes?.length || 0,
     }))
-    // Update dataset info
+    // Update dataset info and class_names from backend
     const ds = datasets.value.find(d => d.id === currentDatasetId.value)
     if (ds) {
       ds.total_images = images.value.length
+      if (data.class_names && data.class_names.length > 0) {
+        ds.class_names = data.class_names
+        datasetClasses.value = [...data.class_names]
+        availableClasses.value = [...data.class_names]
+      }
     }
   } catch (e) {
     console.error('loadImages error:', e)
