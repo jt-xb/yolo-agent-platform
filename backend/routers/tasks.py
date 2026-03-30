@@ -580,7 +580,11 @@ def get_task_iterations(task_id: str, db: Session = Depends(get_db)):
         },
         "iterations": [{
             "iteration_id": f"{task_id}_iter_1",
+            "iteration": 1,
             "config": task.training_config or {},
+            "yolo_model": task.yolo_model,
+            "epochs": task.epochs,
+            "batch_size": task.batch_size,
             "status": task.status,
             "metrics": {
                 "map50": task.map50,
@@ -588,7 +592,7 @@ def get_task_iterations(task_id: str, db: Session = Depends(get_db)):
                 "precision": task.precision,
                 "recall": task.recall,
             },
-            "decision": "pass" if task.status == "completed" else "running",
+            "decision": "pass" if task.status == "completed" else ("running" if task.status == "training" else "stopped"),
         }],
     }
 

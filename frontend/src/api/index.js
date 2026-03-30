@@ -1,4 +1,4 @@
-const BASE_URL = '/api'
+const BASE_URL = import.meta.env.VITE_API_BASE || '/api'
 
 async function request(path, options = {}) {
   const url = `${BASE_URL}${path}`
@@ -33,8 +33,21 @@ async function request(path, options = {}) {
 }
 
 export function createSSE(path, callbacks = {}) {
-  const url = `${BASE_URL}${path}`
-  const es = new EventSource(url)
+  let url
+  try {
+    url = `${BASE_URL}${path}`
+  } catch (err) {
+    callbacks.onError?.(err)
+    return { close: () => {} }
+  }
+
+  let es
+  try {
+    es = new EventSource(url)
+  } catch (err) {
+    callbacks.onError?.(err)
+    return { close: () => {} }
+  }
 
   es.onmessage = (e) => {
     try {
