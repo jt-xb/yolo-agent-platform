@@ -122,7 +122,7 @@ def _update_task_progress(db: Session, task: Task, progress: float, status: str 
     db.commit()
 
 
-def _run_agent_loop_background(task_id: str, description: str, class_names: List[str], dataset_id: str = None):
+def _run_agent_loop_background(task_id: str, description: str, class_names: List[str], dataset_id: str = None, pretrained_model: str = ""):
     """
     后台运行 Agent 训练循环（真正的训练→评估→迭代流程）
     """
@@ -209,33 +209,40 @@ def _run_agent_loop_background(task_id: str, description: str, class_names: List
         # 训练结束，更新状态
         task = db.query(Task).filter(Task.task_id == task_id).first()
         if task:
+            final_status = result.get("status", "completed")
             task.progress = 100.0
-            task.status = "completed"
+            task.status = final_status
             task.completed_at = datetime.utcnow()
 
-            # 保存最优结果
-            best = result.get("best_metrics", {})
-            task.map50 = best.get("map50")
-            task.map50_95 = best.get("map50_95")
-            task.precision = best.get("precision")
-            task.recall = best.get("recall")
-            task.output_model_path = result.get("final_model_path")
+            # 保存最优结果（仅当非停止状态时）
+            if final_status != "stopped":
+                best = result.get("best_metrics", {})
+                task.map50 = best.get("map50")
+                task.map50_95 = best.get("map50_95")
+                task.precision = best.get("precision")
+                task.recall = best.get("recall")
+                task.output_model_path = result.get("final_model_path")
 
-            _create_task_log(db, task_id, "info", f"🎉 训练完成！共迭代 {result['total_iterations']} 次，最佳 mAP50={best.get('map50', 0):.4f}")
+                total_iters = result.get("total_iterations", 0)
+                _create_task_log(db, task_id, "info", f"🎉 训练完成！共迭代 {total_iters} 次，最佳 mAP50={best.get('map50', 0):.4f}")
 
-            # 自动创建模型记录
-            model = GeneratedModel(
-                task_id=task_id,
-                name=task.name,
-                model_path=result.get("final_model_path", ""),
-                model_type="yolov8",
-                file_size="45.2 MB",
-                map50=best.get("map50"),
-                map50_95=best.get("map50_95"),
-            )
-            db.add(model)
+                # 自动创建模型记录
+                if result.get("final_model_path"):
+                    model = GeneratedModel(
+                        task_id=task_id,
+                        name=task.name,
+                        model_path=result.get("final_model_path", ""),
+                        model_type="yolov8",
+                        file_size="45.2 MB",
+                        map50=best.get("map50"),
+                        map50_95=best.get("map50_95"),
+                    )
+                    db.add(model)
+            else:
+                _create_task_log(db, task_id, "info", "⚠️ 训练已停止")
+
             db.commit()
-            emit_task_event(task_id, "status", {"status": "completed", "progress": 100})
+            emit_task_event(task_id, "status", {"status": final_status, "progress": 100})
             emit_task_end(task_id)
 
     except Exception as e:
@@ -290,6 +297,9 @@ def create_task(request: dict, db: Session = Depends(get_db)):
     else:
         data_path = request.get("data_path", "")
 
+    # 增量训练：获取预训练模型路径
+    pretrained_model = request.get("pretrained_model", "")
+
     task = Task(
         task_id=task_id,
         name=request.get("name", request.get("description", "新任务")[:50]),
@@ -305,6 +315,7 @@ def create_task(request: dict, db: Session = Depends(get_db)):
             "class_names": class_names,
             "target_map50": 0.85,
             "target_map95": 0.65,
+            "pretrained_model": pretrained_model,
         }
     )
     db.add(task)
@@ -313,6 +324,8 @@ def create_task(request: dict, db: Session = Depends(get_db)):
 
     _create_task_log(db, task_id, "info", f"✅ 任务已创建：{task.name}")
     _create_task_log(db, task_id, "info", f"📋 检测类别：{', '.join(class_names)}")
+    if pretrained_model:
+        _create_task_log(db, task_id, "info", f"📦 增量训练：基于 {pretrained_model} 继续")
 
     return {
         "success": True,
@@ -452,6 +465,11 @@ def start_task(task_id: str, background_tasks: BackgroundTasks, db: Session = De
     if task.status in ["training"]:
         return {"success": False, "message": "训练正在进行中"}
 
+    # 检查是否有其他训练线程仍在运行
+    from backend.services.training_loop import get_agent_training_loop
+    if get_agent_training_loop(task_id):
+        return {"success": False, "message": "训练正在进行中，请先停止"}
+
     # 获取类别
     class_names = task.training_config.get("class_names", ["object"]) if task.training_config else ["object"]
 
@@ -467,13 +485,17 @@ def start_task(task_id: str, background_tasks: BackgroundTasks, db: Session = De
     _create_task_log(db, task_id, "info", "🚀 开始 Agent 训练流程...")
     _create_task_log(db, task_id, "info", f"📦 模型: {task.yolo_model}, 轮数: {task.epochs}, 批次: {task.batch_size}")
 
+    # 获取增量训练的预训练模型
+    pretrained_model = task.training_config.get("pretrained_model", "") if task.training_config else ""
+
     # 启动后台训练
     background_tasks.add_task(
         _run_agent_loop_background,
         task_id,
         task.description or task.name,
         class_names,
-        dataset_id
+        dataset_id,
+        pretrained_model
     )
 
     return {

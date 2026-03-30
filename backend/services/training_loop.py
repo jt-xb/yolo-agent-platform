@@ -6,6 +6,7 @@ import os
 import time
 import random
 import uuid
+import threading
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Callable
 from dataclasses import dataclass, field
@@ -95,17 +96,21 @@ class AgentTrainingLoop:
     5. 重复直到满足条件或达到上限
     """
 
-    def __init__(self, task_id: str, task_description: str, class_names: List[str], dataset_id: str = None):
+    def __init__(self, task_id: str, task_description: str, class_names: List[str], dataset_id: str = None, pretrained_model: str = ""):
         self.task_id = task_id
         self.task_description = task_description
         self.class_names = class_names
         self.dataset_id = dataset_id
+        self.pretrained_model = pretrained_model  # 增量训练：预训练模型路径
 
         self.iterations: List[TrainingIteration] = []
         self.current_iteration: Optional[TrainingIteration] = None
-        self.status = "initializing"  # initializing, running, completed, failed
+        self.status = "initializing"  # initializing, running, completed, failed, stopped
         self.best_iteration_id: Optional[str] = None
         self.best_metrics: Optional[Dict] = None
+
+        # 停止事件
+        self._stop_event = threading.Event()
 
         # 目标要求
         self.requirements = TargetRequirements()
@@ -124,7 +129,7 @@ class AgentTrainingLoop:
         else:
             model_size = "yolov8l"
 
-        return {
+        config = {
             "yolo_model": model_size,
             "epochs": 100,
             "batch_size": 16,
@@ -136,6 +141,12 @@ class AgentTrainingLoop:
             "augmentation": True,
             "patience": 50,
         }
+
+        # 增量训练：加入预训练模型路径
+        if self.pretrained_model:
+            config["pretrained_model"] = self.pretrained_model
+
+        return config
 
     def _create_iteration(self, config: Dict[str, Any]) -> TrainingIteration:
         """创建新的训练迭代"""
@@ -172,6 +183,14 @@ class AgentTrainingLoop:
         batch_size = iteration.config.get("batch_size", 4)
         image_size = iteration.config.get("image_size", 640)
 
+        # 增量训练：优先使用指定的预训练模型路径
+        pretrained_path = iteration.config.get("pretrained_model")
+        if pretrained_path and os.path.exists(pretrained_path):
+            model_path = pretrained_path
+            iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📦 增量训练：加载预训练模型 {pretrained_path}")
+        else:
+            model_path = f"{model_name}.pt"
+
         iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🖥️  设备: CPU")
         iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📂 数据集: {data_yaml}")
 
@@ -180,7 +199,7 @@ class AgentTrainingLoop:
             from ultralytics import YOLO
             iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🔥 启动 YOLOv8 真实训练（最多 {min(total_epochs, 50)} epochs）...")
 
-            model = YOLO(f"{model_name}.pt")
+            model = YOLO(model_path)
             results = model.train(
                 data=data_yaml,
                 epochs=min(total_epochs, 50),  # 限制最多50轮
@@ -592,6 +611,11 @@ names: {self.class_names}
 
         time_module.sleep(0.3)
 
+        # 检查停止信号（分析阶段结束后）
+        if self._stop_event.is_set():
+            self.status = "stopped"
+            return self._build_final_result()
+
         # ========================================
         # 阶段2：训练迭代循环
         # ========================================
@@ -608,6 +632,11 @@ names: {self.class_names}
             progress_callback(iteration.to_dict(), 1, self.requirements.max_iterations)
 
         while True:
+            # 检查停止信号
+            if self._stop_event.is_set():
+                self.status = "stopped"
+                break
+
             # 执行训练
             self._run_training(iteration)
 
@@ -623,6 +652,11 @@ names: {self.class_names}
 
             if decision in [IterationDecision.MAX_ITERATION, IterationDecision.FAIL_STOP]:
                 self.status = "completed"
+                break
+
+            # 检查停止信号（决定继续迭代之前）
+            if self._stop_event.is_set():
+                self.status = "stopped"
                 break
 
             # 生成下一轮迭代
@@ -651,10 +685,11 @@ def start_agent_training_loop(
     task_id: str,
     task_description: str,
     class_names: List[str],
-    dataset_id: str = None
+    dataset_id: str = None,
+    pretrained_model: str = ""
 ) -> AgentTrainingLoop:
     """启动 Agent 训练循环"""
-    loop = AgentTrainingLoop(task_id, task_description, class_names, dataset_id)
+    loop = AgentTrainingLoop(task_id, task_description, class_names, dataset_id, pretrained_model)
     _active_loops[task_id] = loop
     return loop
 
@@ -666,7 +701,9 @@ def get_agent_training_loop(task_id: str) -> Optional[AgentTrainingLoop]:
 
 def stop_agent_training_loop(task_id: str) -> bool:
     """停止训练循环"""
-    if task_id in _active_loops:
+    loop = _active_loops.get(task_id)
+    if loop:
+        loop._stop_event.set()
         del _active_loops[task_id]
         return True
     return False

@@ -44,7 +44,7 @@ export async function deleteImage(imageId) {
 export async function saveImageAnnotations(imageId, boxes) {
   return request(`/datasets/image/${imageId}/annotations`, {
     method: 'POST',
-    body: JSON.stringify({ boxes }),
+    body: JSON.stringify(boxes),
   })
 }
 
@@ -63,5 +63,29 @@ export async function importDataset(data) {
   return request('/datasets/import', {
     method: 'POST',
     body: JSON.stringify(data),
+  })
+}
+
+export async function extractVideoFrames(datasetId, file, frameInterval = 5, maxFrames = 200, split = 'train') {
+  const formData = new FormData()
+  formData.append('dataset_id', datasetId)
+  formData.append('file', file)
+  formData.append('frame_interval', frameInterval)
+  formData.append('max_frames', maxFrames)
+  formData.append('split', split)
+  return request('/datasets/video-extract', {
+    method: 'POST',
+    body: formData,
+  })
+}
+
+export async function getDatasetMeta(datasetId) {
+  return request(`/datasets/${datasetId}/meta`)
+}
+
+export async function updateDatasetMeta(datasetId, meta) {
+  return request(`/datasets/${datasetId}/meta`, {
+    method: 'PUT',
+    body: JSON.stringify(meta),
   })
 }

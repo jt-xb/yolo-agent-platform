@@ -1,6 +1,7 @@
 """
 数据集管理 API
 """
+import json
 import os
 import shutil
 import uuid
@@ -124,14 +125,51 @@ def get_dataset_images(dataset_id: str, split: str = None):
     """
     获取数据集中的图片列表
     """
-    # 目前只支持demo数据集
+    # demo 数据集用专门的接口
     if dataset_id == "demo" or dataset_id == "1":
         demo = get_demo_dataset()
         images = demo["dataset"]["images"]
         if split:
             images = [img for img in images if img["split"] == split]
         return {"images": images, "total": len(images)}
-    raise HTTPException(status_code=404, detail="数据集不存在")
+
+    # 从 data/datasets/{dataset_id} 或 /tmp/{dataset_id} 加载
+    dataset_path = None
+    for base in [settings.datasets_dir, Path("/tmp")]:
+        p = base / dataset_id
+        if p.exists():
+            dataset_path = p
+            break
+
+    if not dataset_path or not dataset_path.exists():
+        raise HTTPException(status_code=404, detail="数据集不存在")
+
+    meta = _get_dataset_meta(dataset_path)
+
+    images = []
+    for sp in ["train", "val", "test"]:
+        img_dir = dataset_path / "images" / sp
+        lbl_dir = dataset_path / "labels" / sp
+        if not img_dir.exists():
+            continue
+        for img in sorted(img_dir.glob("*")):
+            if img.suffix.lower() not in ['.jpg', '.jpeg', '.png', '.bmp', '.webp']:
+                continue
+            lbl_file = lbl_dir / f"{img.stem}.txt"
+            boxes = _load_boxes(lbl_file)
+            images.append({
+                "id": img.stem,
+                "filename": img.name,
+                "path": str(img),
+                "url": f"/api/datasets/file/{dataset_id}/{sp}/{img.name}",
+                "split": sp,
+                "num_objects": len(boxes),
+                "boxes": boxes,
+            })
+
+    if split:
+        images = [img for img in images if img["split"] == split]
+    return {"images": images, "total": len(images), "class_names": meta.get("class_names", ["object"])}
 
 
 @router.get("/{dataset_id}/annotations")
@@ -262,7 +300,8 @@ async def dino_sam_auto_label(
     if not dataset_path.exists():
         return {"success": False, "message": f"数据集 {dataset_id} 不存在"}
 
-    img_dir = dataset_path / "images" / "train"
+    split = body.get("split", "train")
+    img_dir = dataset_path / "images" / split
     all_images = sorted(img_dir.glob("*.jpg")) if img_dir.exists() else []
 
     if image_ids:
@@ -276,8 +315,8 @@ async def dino_sam_auto_label(
     # 构建 class_name 到 id 的映射
     class_name_to_id = {name: i for i, name in enumerate(class_names)}
 
-    # 标注结果
-    label_dir = dataset_path / "labels" / "auto"
+    # 标注结果：直接保存到 train split 的 labels 目录（与训练打通）
+    label_dir = dataset_path / "labels" / split
     label_dir.mkdir(parents=True, exist_ok=True)
 
     total = len(images_to_label)
@@ -474,6 +513,35 @@ def _guess_class_names(label_dir: Path, img_dir: Path):
     return [f"class_{i}" for i in sorted(names)]
 
 
+def _find_dataset_path(dataset_id: str) -> Optional[Path]:
+    """根据 dataset_id 找到数据集根目录"""
+    if dataset_id == "demo":
+        return Path("/tmp/yolo_demo_dataset")
+    for base in [settings.datasets_dir, Path("/tmp")]:
+        p = base / dataset_id
+        if p.exists():
+            return p
+    return None
+
+
+def _get_dataset_meta(dataset_path: Path) -> dict:
+    """读取数据集元信息"""
+    meta_file = dataset_path / "dataset_meta.json"
+    if meta_file.exists():
+        return json.loads(meta_file.read_text())
+    # 自动从 labels 推导类名
+    lbl_train = dataset_path / "labels" / "train"
+    img_train = dataset_path / "images" / "train"
+    names = _guess_class_names(lbl_train, img_train)
+    return {"class_names": names or ["object"]}
+
+
+def _save_dataset_meta(dataset_path: Path, meta: dict):
+    """保存数据集元信息"""
+    meta_file = dataset_path / "dataset_meta.json"
+    meta_file.write_text(json.dumps(meta, ensure_ascii=False, indent=2))
+
+
 def _load_boxes(label_path: Path):
     """加载 YOLO 标注"""
     if not label_path.exists():
@@ -620,6 +688,98 @@ async def import_dataset(
     }
 
 
+@router.post("/video-extract")
+async def extract_video_frames(
+    dataset_id: str = Body(...),
+    file: UploadFile = File(...),
+    frame_interval: int = Body(5),
+    max_frames: int = Body(200),
+    split: str = Body("train"),
+):
+    """
+    上传视频文件，按帧间隔抽帧导入数据集
+
+    - 支持 MP4/AVI/MOV/MKV 等常见视频格式
+    - frame_interval: 抽帧间隔（每 N 帧抽 1 张），默认 5
+    - max_frames: 最多抽帧数量，默认 200
+    - split: 保存到 train/val/test，默认 train
+    """
+    import cv2
+
+    ext = Path(file.filename).suffix.lower()
+    if ext not in ['.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm']:
+        return {"success": False, "message": f"不支持的视频格式: {ext}，支持 MP4/AVI/MOV/MKV"}
+
+    # 创建数据集目录
+    dataset_path = Path(f"/tmp/{dataset_id}") if dataset_id != "demo" else Path("/tmp/yolo_demo_dataset")
+    img_dir = dataset_path / "images" / split
+    lbl_dir = dataset_path / "labels" / split
+    img_dir.mkdir(parents=True, exist_ok=True)
+    lbl_dir.mkdir(parents=True, exist_ok=True)
+
+    # 保存视频到临时文件
+    video_path = dataset_path / f"{uuid.uuid4().hex[:8]}{ext}"
+    try:
+        with open(video_path, "wb") as out:
+            shutil.copyfileobj(file.file, out)
+    except Exception as e:
+        return {"success": False, "message": f"视频保存失败: {e}"}
+
+    try:
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            return {"success": False, "message": "无法打开视频文件"}
+
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        duration = total_frames / fps if fps > 0 else 0
+
+        extracted = 0
+        frame_idx = 0
+        saved = 0
+
+        while frame_idx < total_frames and saved < max_frames:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # 每隔 frame_interval 帧抽一张
+            img_name = f"frame_{uuid.uuid4().hex[:8]}_{saved:04d}.jpg"
+            img_path = img_dir / img_name
+            success = cv2.imwrite(str(img_path), frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            if success:
+                # 生成空白标注文件
+                lbl_file = lbl_dir / f"{img_path.stem}.txt"
+                lbl_file.touch()
+                saved += 1
+
+            frame_idx += frame_interval
+
+        cap.release()
+        video_path.unlink()  # 删除临时视频文件
+
+        return {
+            "success": True,
+            "message": f"抽帧完成！从 {total_frames} 帧视频中提取 {saved} 张图片（间隔={frame_interval}）",
+            "video_info": {
+                "total_frames": total_frames,
+                "fps": round(fps, 1),
+                "duration_sec": round(duration, 2),
+                "resolution": f"{width}x{height}",
+            },
+            "extracted": saved,
+            "dataset_id": dataset_id,
+            "split": split,
+        }
+
+    except Exception as e:
+        video_path.unlink(missing_ok=True)
+        return {"success": False, "message": f"抽帧失败: {str(e)}"}
+
+
 @router.post("/merge")
 def merge_datasets(
     source_id_1: str,
@@ -750,6 +910,29 @@ def list_all_datasets():
             "class_names": demo["dataset"]["class_names"],
         })
     return {"datasets": datasets}
+
+
+@router.get("/{dataset_id}/meta")
+def get_dataset_meta(dataset_id: str):
+    """获取数据集元信息（类名等）"""
+    dataset_path = _find_dataset_path(dataset_id)
+    if not dataset_path:
+        raise HTTPException(status_code=404, detail="数据集不存在")
+    meta = _get_dataset_meta(dataset_path)
+    return meta
+
+
+@router.put("/{dataset_id}/meta")
+def update_dataset_meta(dataset_id: str, body: dict = Body(...)):
+    """更新数据集元信息"""
+    dataset_path = _find_dataset_path(dataset_id)
+    if not dataset_path:
+        raise HTTPException(status_code=404, detail="数据集不存在")
+    meta = _get_dataset_meta(dataset_path)
+    if "class_names" in body:
+        meta["class_names"] = body["class_names"]
+    _save_dataset_meta(dataset_path, meta)
+    return {"success": True, "class_names": meta["class_names"]}
 
 
 @router.get("/{dataset_id}")
@@ -887,9 +1070,10 @@ def save_image_annotations(
         if img_path:
             break
 
-    # 如果 demo 里没找到，尝试其他数据集
+    # 如果 demo 里没找到，尝试其他数据集（/tmp/ds_* 和 data/datasets/）
     if not img_path:
-        for ds_dir in Path("/tmp").glob("ds_*"):
+        search_dirs = list(Path("/tmp").glob("ds_*")) + list(settings.datasets_dir.glob("*"))
+        for ds_dir in search_dirs:
             if not ds_dir.is_dir():
                 continue
             for split in ["train", "val", "test"]:
