@@ -296,6 +296,41 @@
         </div>
       </template>
     </el-dialog>
+
+    <!-- Agent Decision Dialog -->
+    <el-dialog
+      v-model="showDecisionDialog"
+      title="🤖 Agent 决策建议"
+      width="560px"
+      destroy-on-close
+      :close-on-click-modal="false"
+    >
+      <div class="decision-content" v-if="pendingDecisionData">
+        <div class="llm-analysis-box">
+          <div class="analysis-header">LLM 数据分析</div>
+          <div class="analysis-text">{{ pendingDecisionData.llm_analysis }}</div>
+        </div>
+
+        <div class="decision-options">
+          <div
+            v-for="opt in pendingDecisionData.options"
+            :key="opt.value"
+            class="decision-option"
+            :class="{ 'option-selected': selectedDecision === opt.value }"
+            @click="selectedDecision = opt.value"
+          >
+            <div class="option-label">{{ opt.label }}</div>
+            <div class="option-desc">{{ opt.desc }}</div>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="showDecisionDialog = false" :disabled="submittingDecision">取消</el-button>
+        <el-button type="primary" :loading="submittingDecision" @click="confirmDecision">
+          确认决策
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -304,7 +339,7 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import StatusBadge from '../components/common/StatusBadge.vue'
 import EmptyState from '../components/common/EmptyState.vue'
-import { getTasks, createTask as apiCreateTask, startTask, stopTask, deleteTask as apiDeleteTask, pauseTask as apiPauseTask, resumeTask as apiResumeTask, getTaskLogs, getTaskMetrics, getTaskIterations, createTaskStream } from '../api/tasks'
+import { getTasks, createTask as apiCreateTask, startTask, stopTask, deleteTask as apiDeleteTask, pauseTask as apiPauseTask, resumeTask as apiResumeTask, getTaskLogs, getTaskMetrics, getTaskIterations, createTaskStream, submitDecision, getPendingDecision } from '../api/tasks'
 import { getDatasets } from '../api/datasets'
 
 const tasks = ref([])
@@ -318,6 +353,12 @@ const metrics = ref([])
 const iterations = ref([])
 const logs = ref([])
 let stream = null
+
+// User decision dialog
+const showDecisionDialog = ref(false)
+const pendingDecisionData = ref(null)
+const selectedDecision = ref('')
+const submittingDecision = ref(false)
 
 const createForm = ref({
   name: '',
@@ -439,6 +480,26 @@ async function deleteTask(task) {
   }
 }
 
+async function confirmDecision() {
+  if (!selectedDecision.value) {
+    ElMessage.warning('请选择一个选项')
+    return
+  }
+  submittingDecision.value = true
+  try {
+    const taskId = pendingDecisionData.value?.task_id
+    await submitDecision(taskId, selectedDecision.value)
+    showDecisionDialog.value = false
+    selectedDecision.value = ''
+    pendingDecisionData.value = null
+    await loadTasks()
+  } catch (e) {
+    ElMessage.error('提交决策失败: ' + e.message)
+  } finally {
+    submittingDecision.value = false
+  }
+}
+
 async function openDetail(task) {
   selectedTask.value = task
   showDetailDialog.value = true
@@ -462,7 +523,18 @@ async function openDetail(task) {
   if (stream) stream.close()
   stream = createTaskStream(task.task_id, {
     onMessage(data) {
-      if (data.type === 'status' || data.type === 'log' || data.type === 'metric') {
+      if (data.type === 'decision_needed') {
+        pendingDecisionData.value = {
+          task_id: task.task_id,
+          llm_analysis: data.llm_analysis || data.analysis || '',
+          options: data.options || [
+            { value: 'proceed', label: '⚡ 直接开始训练', desc: '使用当前数据直接开始 Agent 训练迭代' },
+            { value: 'auto_label', label: '🤖 补充自动标注', desc: '先对未标注图片做一轮自动标注，再开始训练（推荐）' },
+            { value: 'stop', label: '⏹️ 暂停训练', desc: '先完善数据集，稍后再训练' },
+          ],
+        }
+        showDecisionDialog.value = true
+      } else if (data.type === 'status' || data.type === 'log' || data.type === 'metric') {
         if (selectedTask.value?.task_id === task.task_id) {
           selectedTask.value = { ...selectedTask.value, ...data }
           if (data.progress !== undefined) {
@@ -773,5 +845,70 @@ onUnmounted(() => { if (stream) stream.close() })
   display: flex;
   align-items: center;
   gap: var(--space-2);
+}
+
+/* Decision Dialog */
+.decision-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.llm-analysis-box {
+  background: var(--color-surface-2);
+  border-radius: var(--radius-sm);
+  padding: var(--space-4);
+}
+
+.analysis-header {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-2);
+}
+
+.analysis-text {
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.decision-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.decision-option {
+  padding: var(--space-3);
+  border: 2px solid var(--color-border-light);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.decision-option:hover {
+  border-color: var(--color-primary);
+  background: var(--color-surface-2);
+}
+
+.decision-option.option-selected {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+}
+
+.option-label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--color-text);
+  margin-bottom: 4px;
+}
+
+.option-desc {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
 }
 </style>

@@ -36,6 +36,17 @@ export async function resumeTask(taskId) {
   return request(`/tasks/${taskId}/resume`, { method: 'POST' })
 }
 
+export async function submitDecision(taskId, decision) {
+  return request(`/tasks/${taskId}/decision`, {
+    method: 'POST',
+    body: JSON.stringify({ decision }),
+  })
+}
+
+export async function getPendingDecision(taskId) {
+  return request(`/tasks/${taskId}/decision`)
+}
+
 export async function getTaskLogs(taskId, lines = 200) {
   return request(`/tasks/${taskId}/logs?lines=${lines}`)
 }

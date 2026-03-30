@@ -22,6 +22,7 @@ class IterationDecision(Enum):
     FAIL_RETRY = "fail_retry"  # 不达标，调整参数重训
     FAIL_STOP = "fail_stop"    # 严重失败，停止
     MAX_ITERATION = "max_iteration"  # 达到最大迭代次数
+    USER_DECISION = "user_decision"  # 等待用户交互决策
 
 
 class TrainingIteration:
@@ -113,6 +114,11 @@ class AgentTrainingLoop:
         self._stop_event = threading.Event()
         # 暂停事件
         self._pause_event = threading.Event()
+        # 用户决策等待
+        self._decision_event = threading.Event()
+        self._waiting_for_decision = False
+        self._pending_decision: Optional[Dict[str, Any]] = None
+        self._last_decision_options: List[Dict[str, str]] = []
 
         # 目标要求
         self.requirements = TargetRequirements()
@@ -424,6 +430,48 @@ class AgentTrainingLoop:
 
         return IterationDecision.FAIL_RETRY
 
+    def _request_user_decision(
+        self,
+        llm_analysis: str,
+        options: List[Dict[str, str]],
+        iteration: "TrainingIteration",
+        progress_callback: Optional[Callable] = None,
+    ) -> str:
+        """
+        暂停训练，等待用户在界面上做出选择。
+        通过 SSE 推送 decision_needed 事件，前端弹窗后 POST /api/tasks/{task_id}/decision。
+        返回用户选择的 decision 字符串。
+        """
+        self._waiting_for_decision = True
+        self._pending_decision = None
+        self._last_decision_options = options
+
+        iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ 需要用户决策，等待选择...")
+
+        # 通过 SSE 通知前端
+        if progress_callback:
+            progress_callback({
+                "type": "decision_needed",
+                "iteration_id": iteration.iteration_id,
+                "llm_analysis": llm_analysis,
+                "options": options,
+                "iteration": iteration.to_dict(),
+            }, len(self.iterations), self.requirements.max_iterations)
+
+        # 阻塞等待用户决策（最多等 30 分钟）
+        self._decision_event.wait(timeout=1800)
+        self._decision_event.clear()
+        self._waiting_for_decision = False
+
+        if self._pending_decision is None:
+            # 超时或异常，默认停止
+            iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ 用户决策超时，默认停止")
+            return "stop"
+
+        decision = self._pending_decision["decision"]
+        iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 用户决策: {decision}")
+        return decision
+
     def run(self, progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
         """
         执行完整的 Agent 训练循环
@@ -566,7 +614,13 @@ class AgentTrainingLoop:
 
         analysis_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 数据集统计: {final_labeled}/{len(all_images)} 张已标注，共 {final_objects} 个目标")
 
-        # ========== LLM 数据分析建议 ==========
+        # ========== LLM 数据分析建议 + 用户交互 ==========
+        llm_analysis_text = ""
+        decision_options = [
+            {"value": "proceed", "label": "⚡ 直接开始训练", "desc": "使用当前数据直接开始 Agent 训练迭代"},
+            {"value": "auto_label", "label": "🤖 补充自动标注", "desc": "先对未标注图片做一轮自动标注，再开始训练（推荐）"},
+            {"value": "stop", "label": "⏹️ 暂停训练", "desc": "先完善数据集，稍后再训练"},
+        ]
         try:
             from backend.core.llm import get_llm_service
             dataset_summary = f"""数据集分析摘要：
@@ -576,17 +630,75 @@ class AgentTrainingLoop:
 - 总目标框: {final_objects}
 - 类别列表: {', '.join(self.class_names)}
 
-是否应该使用自动标注？应该采用什么样的数据增强策略？"""
+请给出简短的数据质量评估和训练策略建议。"""
             llm_response = get_llm_service().chat_with_system(
-                "你是一位计算机视觉数据工程师。分析这个数据集的质量，并给出训练策略建议。",
+                "你是一位计算机视觉数据工程师。简短分析这个数据集的质量，给出训练策略建议。",
                 dataset_summary,
                 temperature=0.3,
             )
-            # 只取前300字符避免日志过长
-            truncated = llm_response[:300].replace("\n", " ")
+            llm_analysis_text = llm_response[:400].strip()
+            truncated = llm_analysis_text[:300].replace("\n", " ")
             analysis_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🤖 LLM 数据分析: {truncated}")
         except Exception as e:
+            llm_analysis_text = f"数据质量分析失败: {str(e)[:100]}"
             analysis_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🤖 LLM 数据分析不可用: {str(e)[:100]}")
+
+        # 用户交互决策点：展示 LLM 分析，让用户选择行动
+        # 构建临时 iteration 用于传递分析
+        class _FakeIter:
+            def __init__(self, task_id, llm_analysis, logs):
+                self.iteration_id = f"{task_id}_pre_analysis"
+                self.llm_analysis = llm_analysis
+                self.logs = logs
+            def to_dict(self):
+                return {
+                    "iteration_id": self.iteration_id,
+                    "config": {"phase": "user_decision", "llm_analysis": self.llm_analysis},
+                    "status": "user_decision",
+                    "logs": self.logs,
+                    "metrics": {},
+                }
+        fake_iter = _FakeIter(self.task_id, llm_analysis_text, analysis_logs)
+
+        user_choice = self._request_user_decision(
+            llm_analysis=llm_analysis_text,
+            options=decision_options,
+            iteration=fake_iter,
+            progress_callback=progress_callback,
+        )
+
+        if user_choice == "stop":
+            self.status = "stopped"
+            return self._build_final_result()
+        elif user_choice == "auto_label":
+            # 补充自动标注
+            analysis_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🔄 用户选择：先补充自动标注...")
+            unlabeled_imgs = [img for img in all_images if not (lbl_dir / f"{img.stem}.txt").exists()]
+            if unlabeled_imgs:
+                try:
+                    from backend.services.grounding_dino_sam import annotate_dataset
+                    auto_lbl_dir = dataset_path / "labels" / "auto"
+                    auto_lbl_dir.mkdir(parents=True, exist_ok=True)
+                    class_name_to_id = {name: i for i, name in enumerate(self.class_names)}
+                    result = annotate_dataset(
+                        image_paths=[str(img) for img in unlabeled_imgs],
+                        class_names=self.class_names,
+                        output_dir=str(auto_lbl_dir),
+                        class_name_to_id=class_name_to_id,
+                        box_threshold=0.25,
+                    )
+                    import shutil
+                    for lbl_file in auto_lbl_dir.glob("*.txt"):
+                        shutil.copy2(str(lbl_file), str(lbl_dir / lbl_file.name))
+                    analysis_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ 补充标注完成：{result.get('annotated', 0)} 张")
+                except Exception as e:
+                    analysis_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ 补充标注失败: {e}")
+            # 重新统计
+            new_labeled = sum(1 for img in all_images if (lbl_dir / f"{img.stem}.txt").exists() and (lbl_dir / f"{img.stem}.txt").stat().st_size > 0)
+            analysis_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 补充后统计: {new_labeled}/{len(all_images)} 张已标注")
+
+        # 继续正常流程：生成 data.yaml ...
+        analysis_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🚀 用户确认，开始训练...")
 
         # 生成 data.yaml（使用绝对路径），同时保存到任务专属目录供训练使用
         data_yaml_path = dataset_path / "data.yaml"
@@ -770,3 +882,29 @@ def resume_agent_training_loop(task_id: str) -> bool:
 def get_agent_training_loop(task_id: str):
     """获取运行中的训练循环"""
     return _active_loops.get(task_id)
+
+
+def submit_user_decision(task_id: str, decision: str) -> bool:
+    """
+    提交用户在界面上做出的决策，解锁训练循环继续执行。
+    """
+    loop = _active_loops.get(task_id)
+    if not loop:
+        return False
+    loop._pending_decision = {"decision": decision}
+    loop._decision_event.set()
+    return True
+
+
+def get_pending_decision(task_id: str) -> Optional[Dict[str, Any]]:
+    """获取当前等待用户决策的信息"""
+    loop = _active_loops.get(task_id)
+    if not loop:
+        return None
+    if not loop._waiting_for_decision:
+        return None
+    return {
+        "waiting": True,
+        "options": loop._last_decision_options,
+        "pending": loop._pending_decision,
+    }

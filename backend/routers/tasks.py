@@ -308,7 +308,7 @@ def _run_regular_training_background(task_id: str, dataset_id: str = None, pretr
         model = YOLO(model_path)
 
         # 注册到 active loops（支持暂停）
-        loop = start_agent_training_loop(task_id, task.description or task.name, [], dataset_id)
+        loop = start_agent_training_loop(task_id, task.description or task.name, task.training_config or {}, dataset_id)
         # 覆盖状态
         loop.status = "training"
 
@@ -716,6 +716,35 @@ def resume_task(task_id: str, db: Session = Depends(get_db)):
         emit_task_event(task_id, "status", {"status": "training"})
         return {"success": True, "message": "训练已恢复"}
     return {"success": False, "message": "训练不在暂停中，无法恢复"}
+
+
+@router.post("/{task_id}/decision")
+def submit_task_decision(task_id: str, body: dict = Body(...)):
+    """
+    提交用户在 Agent 训练决策点的选择。
+
+    decision 可选值:
+    - "proceed": 直接开始训练
+    - "auto_label": 先补充自动标注
+    - "stop": 停止训练
+    """
+    from backend.services.training_loop import submit_user_decision
+
+    decision = body.get("decision", "stop")
+    ok = submit_user_decision(task_id, decision)
+    if not ok:
+        raise HTTPException(status_code=400, detail="任务不在等待决策状态")
+    return {"success": True, "decision": decision}
+
+
+@router.get("/{task_id}/decision")
+def get_task_decision(task_id: str):
+    """查询当前是否在等待用户决策"""
+    from backend.services.training_loop import get_pending_decision
+    info = get_pending_decision(task_id)
+    if info is None:
+        return {"waiting": False}
+    return info
 
 
 @router.get("/{task_id}/logs")
