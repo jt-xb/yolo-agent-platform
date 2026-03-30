@@ -258,7 +258,16 @@
                 </span>
               </template>
             </el-table-column>
-            <el-table-column prop="decision" label="决策" />
+            <el-table-column prop="decision" label="决策">
+              <template #default="{ row }">
+                <span v-if="row.decision === 'pass'">✅ 达标</span>
+                <span v-else-if="row.decision === 'fail_retry'">🔄 调整重试</span>
+                <span v-else-if="row.decision === 'fail_stop'">❌ 失败停止</span>
+                <span v-else-if="row.decision === 'max_iteration'">⏹️ 达到上限</span>
+                <span v-else-if="row.decision === 'user_decision'">👤 用户决策</span>
+                <span v-else>{{ row.decision }}</span>
+              </template>
+            </el-table-column>
           </el-table>
         </div>
 

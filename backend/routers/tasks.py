@@ -113,7 +113,7 @@ def _create_task_log(db: Session, task_id: str, level: str, message: str):
     db.add(log)
     db.commit()
     # 推送到 SSE 实时流
-    emit_task_event(task_id, "log", {"level": level, "message": message, "ts": datetime.now().strftime("%H:%M:%S")})
+    emit_task_event(task_id, "log", {"type": "log", "level": level, "message": message, "ts": datetime.now().strftime("%H:%M:%S")})
 
 
 def _update_task_progress(db: Session, task: Task, progress: float, status: str = None):
@@ -161,6 +161,7 @@ def _run_agent_loop_background(task_id: str, description: str, class_names: List
             metrics = iteration_data.get("metrics", {})
             if metrics.get("map50"):
                 emit_task_event(task_id, "metrics", {
+                    "type": "metric",
                     "iteration": current_iter,
                     "total": total_iters,
                     "progress": round(min((current_iter / total_iters) * 100, 95), 1),
@@ -243,7 +244,7 @@ def _run_agent_loop_background(task_id: str, description: str, class_names: List
                 _create_task_log(db, task_id, "info", "⚠️ 训练已停止")
 
             db.commit()
-            emit_task_event(task_id, "status", {"status": final_status, "progress": 100})
+            emit_task_event(task_id, "status", {"type": "status", "status": final_status, "progress": 100})
             emit_task_end(task_id)
 
     except Exception as e:
@@ -254,7 +255,7 @@ def _run_agent_loop_background(task_id: str, description: str, class_names: List
             task.error_message = str(e)
             _create_task_log(db, task_id, "error", f"❌ 训练出错：{str(e)}")
             db.commit()
-            emit_task_event(task_id, "status", {"status": "failed", "error": str(e)})
+            emit_task_event(task_id, "status", {"type": "status", "status": "failed", "error": str(e)})
             emit_task_end(task_id)
     finally:
         db.close()
@@ -362,7 +363,7 @@ def _run_regular_training_background(task_id: str, dataset_id: str = None, pretr
             db.commit()
 
             _create_task_log(db, task_id, "info", f"🎉 训练完成！mAP50={map50:.4f}")
-            emit_task_event(task_id, "status", {"status": "completed", "progress": 100})
+            emit_task_event(task_id, "status", {"type": "status", "status": "completed", "progress": 100})
             emit_task_end(task_id)
 
             # 自动创建模型记录
@@ -389,7 +390,7 @@ def _run_regular_training_background(task_id: str, dataset_id: str = None, pretr
             _create_task_log(db, task_id, "error", f"❌ 训练出错：{str(e)}")
             _create_task_log(db, task_id, "error", f"详细：{traceback.format_exc()[-500:]}")
             db.commit()
-            emit_task_event(task_id, "status", {"status": "failed", "error": str(e)})
+            emit_task_event(task_id, "status", {"type": "status", "status": "failed", "error": str(e)})
             emit_task_end(task_id)
     finally:
         db.close()
@@ -675,7 +676,7 @@ def stop_task(task_id: str, db: Session = Depends(get_db)):
     db.commit()
 
     _create_task_log(db, task_id, "warning", "⚠️ 训练已手动停止")
-    emit_task_event(task_id, "status", {"status": "stopped"})
+    emit_task_event(task_id, "status", {"type": "status", "status": "stopped"})
     emit_task_end(task_id)
     return {"success": True, "message": "训练已停止"}
 
@@ -694,7 +695,7 @@ def pause_task(task_id: str, db: Session = Depends(get_db)):
         task.status = "paused"
         db.commit()
         _create_task_log(db, task_id, "info", "⏸️ 训练已暂停")
-        emit_task_event(task_id, "status", {"status": "paused"})
+        emit_task_event(task_id, "status", {"type": "status", "status": "paused"})
         return {"success": True, "message": "训练已暂停"}
     return {"success": False, "message": "训练不在运行中，无法暂停"}
 
@@ -713,7 +714,7 @@ def resume_task(task_id: str, db: Session = Depends(get_db)):
         task.status = "training"
         db.commit()
         _create_task_log(db, task_id, "info", "▶️ 训练已恢复")
-        emit_task_event(task_id, "status", {"status": "training"})
+        emit_task_event(task_id, "status", {"type": "status", "status": "training"})
         return {"success": True, "message": "训练已恢复"}
     return {"success": False, "message": "训练不在暂停中，无法恢复"}
 

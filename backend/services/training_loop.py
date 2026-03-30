@@ -164,7 +164,7 @@ class AgentTrainingLoop:
         self.current_iteration = iteration
         return iteration
 
-    def _run_training(self, iteration: TrainingIteration) -> bool:
+    def _run_training(self, iteration: TrainingIteration, progress_callback: Optional[Callable] = None) -> bool:
         """
         执行单次训练
         始终使用真实 YOLO 训练（不做 mock fallback）
@@ -208,6 +208,40 @@ class AgentTrainingLoop:
             iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🔥 启动 YOLOv8 真实训练（最多 {min(total_epochs, 50)} epochs）...")
 
             model = YOLO(model_path)
+
+            # 注册 epoch 回调，流式推送每轮结果
+            if progress_callback:
+                def on_epoch_end_cb(trainer):
+                    epoch = trainer.epoch
+                    total = trainer.epochs
+                    metrics_dict = getattr(trainer, 'metrics', {})
+                    map50 = metrics_dict.get('metrics/mAP50(B)', 0.0)
+                    map50_95 = metrics_dict.get('metrics/mAP50-95(B)', 0.0)
+                    precision = metrics_dict.get('metrics/precision(B)', 0.0)
+                    recall = metrics_dict.get('metrics/recall(B)', 0.0)
+                    loss = getattr(trainer, 'loss', 0.0)
+                    log_msg = f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Epoch {epoch+1}/{total}: loss={loss:.4f}, mAP50={map50:.4f}"
+                    iteration.logs.append(log_msg)
+                    # 直接发送 SSE log 事件（实时流到前端）
+                    from backend.routers.tasks import emit_task_event
+                    emit_task_event(self.task_id, "log", {
+                        "type": "log",
+                        "message": log_msg,
+                        "timestamp": datetime.now().isoformat(),
+                        "level": "info",
+                    })
+                    # 推送进度
+                    progress_callback({
+                        "metrics": {
+                            "map50": map50,
+                            "map50_95": map50_95,
+                            "precision": precision,
+                            "recall": recall,
+                            "train_loss": loss,
+                        },
+                        "logs": [],
+                    }, len(self.iterations), self.requirements.max_iterations)
+                model.callbacks['on_fit_epoch_end'].append(on_epoch_end_cb)
 
             # Pause check before training
             if self._pause_event.is_set():
@@ -616,32 +650,55 @@ class AgentTrainingLoop:
 
         # ========== LLM 数据分析建议 + 用户交互 ==========
         llm_analysis_text = ""
-        decision_options = [
-            {"value": "proceed", "label": "⚡ 直接开始训练", "desc": "使用当前数据直接开始 Agent 训练迭代"},
-            {"value": "auto_label", "label": "🤖 补充自动标注", "desc": "先对未标注图片做一轮自动标注，再开始训练（推荐）"},
-            {"value": "stop", "label": "⏹️ 暂停训练", "desc": "先完善数据集，稍后再训练"},
-        ]
+        decision_options = []
         try:
             from backend.core.llm import get_llm_service
             dataset_summary = f"""数据集分析摘要：
 - 总图片数: {len(all_images)}
-- 已标注图片: {final_labeled}
-- 标注率: {final_labeled/len(all_images)*100:.1f}%（需要>50%才建议跳过自动标注）
+- 已标注图片: {final_labeled}（标注率: {final_labeled/len(all_images)*100:.1f}%）
+- 未标注图片: {len(all_images) - final_labeled}
 - 总目标框: {final_objects}
 - 类别列表: {', '.join(self.class_names)}
 
-请给出简短的数据质量评估和训练策略建议。"""
-            llm_response = get_llm_service().chat_with_system(
-                "你是一位计算机视觉数据工程师。简短分析这个数据集的质量，给出训练策略建议。",
+请作为计算机视觉数据工程师，给出：
+1. 数据质量简短评估（1-2句话）
+2. 具体可操作建议，针对上述数据问题给出明确行动方案（每个建议要具体，如"对哪几张图片做什么操作"）
+3. 每个建议给出 label（中文短标题）和 desc（1句话说明）
+
+回复格式（直接返回JSON数组，不要其他内容）：
+[
+  {{"value": "proceed", "label": "⚡ 直接开始训练", "desc": "忽略当前数据问题，直接开始训练"}},
+  {{"value": "auto_label", "label": "🤖 自动标注剩余图片", "desc": "对{len(all_images) - final_labeled}张未标注图片进行自动标注"}},
+  {{"value": "stop", "label": "⏹️ 暂停补充数据", "desc": "先上传更多图片再训练"}}
+]"""
+            raw_response = get_llm_service().chat_with_system(
+                "你是一位计算机视觉数据工程师。分析数据集质量，给出具体可操作的建议。",
                 dataset_summary,
                 temperature=0.3,
             )
-            llm_analysis_text = llm_response[:400].strip()
-            truncated = llm_analysis_text[:300].replace("\n", " ")
-            analysis_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🤖 LLM 数据分析: {truncated}")
+            # 尝试解析 LLM 返回的 JSON 选项
+            import json, re
+            try:
+                # 尝试直接解析 JSON
+                decision_options = json.loads(raw_response)
+                llm_analysis_text = "（LLM 已给出具体建议，请选择）"
+            except Exception:
+                # 解析失败，使用默认选项+原始文本
+                llm_analysis_text = raw_response.strip()
+                decision_options = [
+                    {"value": "proceed", "label": "⚡ 直接开始训练", "desc": "使用当前数据直接开始 Agent 训练迭代"},
+                    {"value": "auto_label", "label": "🤖 补充自动标注", "desc": f"对剩余 {len(all_images) - final_labeled} 张未标注图片做自动标注"},
+                    {"value": "stop", "label": "⏹️ 暂停训练", "desc": "先完善数据集，稍后再训练"},
+                ]
+            analysis_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🤖 LLM 数据分析: {llm_analysis_text[:500].replace(chr(10), ' ')}")
         except Exception as e:
             llm_analysis_text = f"数据质量分析失败: {str(e)[:100]}"
             analysis_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🤖 LLM 数据分析不可用: {str(e)[:100]}")
+            decision_options = [
+                {"value": "proceed", "label": "⚡ 直接开始训练", "desc": "使用当前数据直接开始训练"},
+                {"value": "auto_label", "label": "🤖 补充自动标注", "desc": f"对剩余 {len(all_images) - final_labeled} 张未标注图片做自动标注"},
+                {"value": "stop", "label": "⏹️ 暂停训练", "desc": "先完善数据集，稍后再训练"},
+            ]
 
         # 用户交互决策点：展示 LLM 分析，让用户选择行动
         # 构建临时 iteration 用于传递分析
@@ -788,7 +845,7 @@ names: {self.class_names}
                 iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ▶️ 训练已恢复")
 
             # 执行训练
-            self._run_training(iteration)
+            self._run_training(iteration, progress_callback)
 
             if progress_callback:
                 progress_callback(iteration.to_dict(), len(self.iterations), self.requirements.max_iterations)
