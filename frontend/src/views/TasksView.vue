@@ -302,7 +302,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import StatusBadge from '../components/common/StatusBadge.vue'
 import EmptyState from '../components/common/EmptyState.vue'
@@ -501,6 +501,14 @@ function formatTime(ts) {
   }
   return new Date(ts).toLocaleTimeString()
 }
+
+// 关闭对话框时清理 SSE 流
+watch(showDetailDialog, (val) => {
+  if (!val && stream) {
+    stream.close()
+    stream = null
+  }
+})
 
 onMounted(async () => {
   await Promise.all([loadTasks(), loadDatasets()])
