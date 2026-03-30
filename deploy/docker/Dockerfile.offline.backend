@@ -1,0 +1,48 @@
+# Dockerfile.offline.backend
+# 离线版后端镜像（ARM aarch64）
+# 使用预下载的 wheel 包安装依赖，无需网络
+
+FROM python:3.10-slim
+
+# 阿里云 ARM 镜像源（构建时联网用）
+RUN echo 'deb [arch=arm64] http://mirrors.aliyun.com/ubuntu-ports focal main restricted' > /etc/apt/sources.list && \
+    echo 'deb [arch=arm64] http://mirrors.aliyun.com/ubuntu-ports focal-updates main restricted' >> /etc/apt/sources.list && \
+    echo 'deb [arch=arm64] http://mirrors.aliyun.com/ubuntu-ports focal universe' >> /etc/apt/sources.list && \
+    echo 'deb [arch=arm64] http://mirrors.aliyun.com/ubuntu-ports focal-updates universe' >> /etc/apt/sources.list
+
+# 安装系统依赖（OpenCV 等需要）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1-mesa-glx \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
+        libgomp1 \
+        libffi7 \
+        libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 拷贝源码
+COPY backend/ /app/backend/
+COPY data/ /app/data/          # 预置模型权重（可选）
+
+# 离线安装 Python 包（从 wheels 目录）
+COPY deploy/wheels/ /wheels/
+RUN pip install --no-index --find-links=/wheels -r /app/backend/requirements.txt \
+    && rm -rf /wheels
+
+# 创建必要目录
+RUN mkdir -p /app/data/{datasets,models,logs}
+
+ENV PYTHONPATH=/app
+ENV DATA_DIR=/app/data
+
+EXPOSE 8000
+
+# 默认离线模式（规则引擎）
+ENV LLM_API_KEY=
+ENV USE_MLU=false
+
+CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
