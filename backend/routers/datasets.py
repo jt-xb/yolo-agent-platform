@@ -203,30 +203,86 @@ def get_dataset_annotations(dataset_id: str, image_id: str = None):
 @router.post("/upload-images")
 async def upload_images(dataset_id: str = "demo", files: List[UploadFile] = File(...)):
     """
-    上传图片到数据集
+    上传图片到数据集（支持 ZIP 包自动解压）
     """
-    # 创建目录
-    upload_dir = Path("/tmp/yolo_demo_dataset/images/train")
-    upload_dir.mkdir(parents=True, exist_ok=True)
+    # 确定目标目录
+    if dataset_id == "demo":
+        dataset_path = Path("/tmp/yolo_demo_dataset")
+    else:
+        dataset_path = Path(f"/tmp/{dataset_id}")
 
-    uploaded = []
+    # 允许 ZIP 上传：优先从 ZIP 解压，ZIP 内图片放入 train
+    zip_files = []
+    other_files = []
+
     for f in files:
         if not f.filename:
             continue
         ext = Path(f.filename).suffix.lower()
-        if ext not in ['.jpg', '.jpeg', '.png', '.bmp']:
-            continue
+        if ext == '.zip':
+            zip_files.append(f)
+        elif ext in ['.jpg', '.jpeg', '.png', '.bmp', '.webp']:
+            other_files.append(f)
 
+    uploaded = []
+
+    # 处理 ZIP 文件
+    for f in zip_files:
+        zip_path = dataset_path / f"{uuid.uuid4().hex[:8]}.zip"
+        try:
+            with open(zip_path, "wb") as out:
+                shutil.copyfileobj(f.file, out)
+            with zipfile.ZipFile(zip_path, 'r') as z:
+                for member in z.namelist():
+                    if member.startswith('__MACOSX') or '/__MACOSX/' in member:
+                        continue
+                    ext = Path(member).suffix.lower()
+                    if ext not in ['.jpg', '.jpeg', '.png', '.bmp', '.webp']:
+                        continue
+                    data = z.read(member)
+                    img_name = f"{uuid.uuid4().hex[:8]}{ext}"
+                    img_dir = dataset_path / "images" / "train"
+                    img_dir.mkdir(parents=True, exist_ok=True)
+                    img_path = img_dir / img_name
+                    img_path.write_bytes(data)
+                    # 生成空白标注
+                    lbl_dir = dataset_path / "labels" / "train"
+                    lbl_dir.mkdir(parents=True, exist_ok=True)
+                    lbl_file = lbl_dir / f"{img_path.stem}.txt"
+                    lbl_file.touch()
+                    uploaded.append({
+                        "id": img_path.stem,
+                        "filename": member,
+                        "path": str(img_path),
+                        "url": f"/api/datasets/file/{dataset_id}/train/{img_name}",
+                        "split": "train",
+                    })
+            zip_path.unlink()
+        except Exception as e:
+            print(f"解压失败 {f.filename}: {e}")
+
+    # 处理普通图片
+    img_dir = dataset_path / "images" / "train"
+    lbl_dir = dataset_path / "labels" / "train"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    lbl_dir.mkdir(parents=True, exist_ok=True)
+
+    for f in other_files:
+        ext = Path(f.filename).suffix.lower()
         new_name = f"{uuid.uuid4().hex[:8]}{ext}"
-        file_path = upload_dir / new_name
+        file_path = img_dir / new_name
         try:
             with open(file_path, "wb") as out:
                 shutil.copyfileobj(f.file, out)
+            # 生成空白标注文件
+            lbl_file = lbl_dir / f"{file_path.stem}.txt"
+            lbl_file.touch()
             uploaded.append({
-                "id": new_name.replace(ext, ""),
+                "id": file_path.stem,
                 "filename": f.filename,
                 "path": str(file_path),
-                "url": f"/api/datasets/image/{new_name.replace(ext, '')}",
+                "url": f"/api/datasets/file/{dataset_id}/train/{new_name}",
+                "split": "train",
             })
         except Exception as e:
             print(f"上传失败 {f.filename}: {e}")

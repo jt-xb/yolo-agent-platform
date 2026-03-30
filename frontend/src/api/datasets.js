@@ -31,7 +31,22 @@ export async function deleteDataset(datasetId) {
 export async function uploadImages(datasetId, files) {
   const formData = new FormData()
   files.forEach(f => formData.append('files', f))
+  formData.append('train_ratio', '0.8')
+  formData.append('val_ratio', '0.1')
+  formData.append('test_ratio', '0.1')
   return request(`/datasets/upload-images?dataset_id=${datasetId}`, {
+    method: 'POST',
+    body: formData,
+  })
+}
+
+export async function importDatasetFiles(files, trainRatio = 0.8, valRatio = 0.1, testRatio = 0.1) {
+  const formData = new FormData()
+  files.forEach(f => formData.append('files', f))
+  formData.append('train_ratio', String(trainRatio))
+  formData.append('val_ratio', String(valRatio))
+  formData.append('test_ratio', String(testRatio))
+  return request('/datasets/import', {
     method: 'POST',
     body: formData,
   })

@@ -393,6 +393,10 @@
 
     <!-- Upload Dialog -->
     <el-dialog v-model="showUploadDialog" title="上传图片" width="480px" destroy-on-close>
+      <div style="margin-bottom: 12px; font-size: 13px; color: var(--color-text-muted)">
+        目标数据集：<strong>{{ datasets.find(d => d.id === currentDatasetId)?.name || currentDatasetId }}</strong>
+        <br><span style="font-size: 12px">支持 JPG、PNG、WebP 图片或 ZIP 压缩包（自动解压）</span>
+      </div>
       <el-upload
         ref="uploadRef"
         drag
@@ -401,19 +405,19 @@
         :on-change="onFileChange"
         :on-remove="onFileRemove"
         multiple
-        accept="image/*"
+        accept="image/*,.zip"
         style="width: 100%"
       >
         <div class="upload-content">
           <div class="upload-icon">📤</div>
-          <div class="upload-text">拖拽图片到此处，或点击上传</div>
-          <div class="upload-hint">支持 JPG、PNG、WebP，单个文件不超过 10MB</div>
+          <div class="upload-text">拖拽图片或 ZIP 到此处，或点击上传</div>
+          <div class="upload-hint">ZIP 内图片将自动解压并分配到训练集</div>
         </div>
       </el-upload>
       <template #footer>
         <el-button @click="showUploadDialog = false">取消</el-button>
         <el-button type="primary" :loading="uploading" @click="submitUpload" :disabled="fileList.length === 0">
-          上传 {{ fileList.length }} 张
+          上传 {{ fileList.length }} 个{{ zipFileCount > 0 ? '（含ZIP）' : '' }}
         </el-button>
       </template>
     </el-dialog>
