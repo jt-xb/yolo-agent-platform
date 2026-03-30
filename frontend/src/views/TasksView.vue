@@ -21,7 +21,7 @@
       <EmptyState
         icon="🎯"
         title="暂无训练任务"
-        description="创建一个训练任务，上传图片，Agent 将自动完成标注和训练"
+        description="创建一个训练任务，使用数据集训练 YOLO 模型"
       >
         <el-button type="primary" @click="showCreateDialog = true" style="margin-top: 16px">
           创建第一个任务
@@ -179,12 +179,6 @@
             style="width: 100%"
           />
         </el-form-item>
-        <el-form-item label="训练模式">
-          <el-radio-group v-model="createForm.trainingType">
-            <el-radio label="agent">🤖 Agent 智能训练（自动调参迭代）</el-radio>
-            <el-radio label="regular">⚡ 常规训练（固定参数，单次）</el-radio>
-          </el-radio-group>
-        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showCreateDialog = false">取消</el-button>
@@ -290,8 +284,7 @@
       <template #footer>
         <div class="detail-footer">
           <div class="footer-left">
-            <el-tag v-if="selectedTask?.training_type === 'agent'" type="primary">🤖 Agent</el-tag>
-            <el-tag v-else type="warning">⚡ 常规</el-tag>
+            <el-tag type="warning">⚡ 常规训练</el-tag>
           </div>
           <el-button
             v-if="selectedTask?.status !== 'training' && selectedTask?.status !== 'paused'"
@@ -305,41 +298,6 @@
         </div>
       </template>
     </el-dialog>
-
-    <!-- Agent Decision Dialog -->
-    <el-dialog
-      v-model="showDecisionDialog"
-      title="🤖 Agent 决策建议"
-      width="560px"
-      destroy-on-close
-      :close-on-click-modal="false"
-    >
-      <div class="decision-content" v-if="pendingDecisionData">
-        <div class="llm-analysis-box">
-          <div class="analysis-header">LLM 数据分析</div>
-          <div class="analysis-text">{{ pendingDecisionData.llm_analysis }}</div>
-        </div>
-
-        <div class="decision-options">
-          <div
-            v-for="opt in pendingDecisionData.options"
-            :key="opt.value"
-            class="decision-option"
-            :class="{ 'option-selected': selectedDecision === opt.value }"
-            @click="selectedDecision = opt.value"
-          >
-            <div class="option-label">{{ opt.label }}</div>
-            <div class="option-desc">{{ opt.desc }}</div>
-          </div>
-        </div>
-      </div>
-      <template #footer>
-        <el-button @click="showDecisionDialog = false" :disabled="submittingDecision">取消</el-button>
-        <el-button type="primary" :loading="submittingDecision" @click="confirmDecision">
-          确认决策
-        </el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -348,7 +306,7 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import StatusBadge from '../components/common/StatusBadge.vue'
 import EmptyState from '../components/common/EmptyState.vue'
-import { getTasks, createTask as apiCreateTask, startTask, stopTask, deleteTask as apiDeleteTask, pauseTask as apiPauseTask, resumeTask as apiResumeTask, getTaskLogs, getTaskMetrics, getTaskIterations, createTaskStream, submitDecision, getPendingDecision } from '../api/tasks'
+import { getTasks, createTask as apiCreateTask, startTask, stopTask, deleteTask as apiDeleteTask, pauseTask as apiPauseTask, resumeTask as apiResumeTask, getTaskLogs, getTaskMetrics, getTaskIterations, createTaskStream } from '../api/tasks'
 import { getDatasets } from '../api/datasets'
 
 const tasks = ref([])
@@ -363,12 +321,6 @@ const iterations = ref([])
 const logs = ref([])
 let stream = null
 
-// User decision dialog
-const showDecisionDialog = ref(false)
-const pendingDecisionData = ref(null)
-const selectedDecision = ref('')
-const submittingDecision = ref(false)
-
 const createForm = ref({
   name: '',
   description: '',
@@ -376,7 +328,6 @@ const createForm = ref({
   datasetId: 'demo',
   yolo_model: 'yolov8n',
   epochs: 100,
-  trainingType: 'agent',
 })
 
 async function loadDatasets() {
@@ -421,11 +372,11 @@ async function createTask() {
       dataset_id: createForm.value.datasetId,
       yolo_model: createForm.value.yolo_model,
       epochs: createForm.value.epochs,
-      training_type: createForm.value.trainingType,
+      training_type: 'regular',
     })
     ElMessage.success('任务创建成功')
     showCreateDialog.value = false
-    createForm.value = { name: '', description: '', classes: '', datasetId: createForm.value.datasetId || 'demo', yolo_model: 'yolov8n', epochs: 100, trainingType: 'agent' }
+    createForm.value = { name: '', description: '', classes: '', datasetId: createForm.value.datasetId || 'demo', yolo_model: 'yolov8n', epochs: 100 }
     await loadTasks()
   } catch (e) {
     ElMessage.error('创建失败: ' + e.message)
@@ -489,26 +440,6 @@ async function deleteTask(task) {
   }
 }
 
-async function confirmDecision() {
-  if (!selectedDecision.value) {
-    ElMessage.warning('请选择一个选项')
-    return
-  }
-  submittingDecision.value = true
-  try {
-    const taskId = pendingDecisionData.value?.task_id
-    await submitDecision(taskId, selectedDecision.value)
-    showDecisionDialog.value = false
-    selectedDecision.value = ''
-    pendingDecisionData.value = null
-    await loadTasks()
-  } catch (e) {
-    ElMessage.error('提交决策失败: ' + e.message)
-  } finally {
-    submittingDecision.value = false
-  }
-}
-
 async function openDetail(task) {
   selectedTask.value = task
   showDetailDialog.value = true
@@ -532,18 +463,7 @@ async function openDetail(task) {
   if (stream) stream.close()
   stream = createTaskStream(task.task_id, {
     onMessage(data) {
-      if (data.type === 'decision_needed') {
-        pendingDecisionData.value = {
-          task_id: task.task_id,
-          llm_analysis: data.llm_analysis || data.analysis || '',
-          options: data.options || [
-            { value: 'proceed', label: '⚡ 直接开始训练', desc: '使用当前数据直接开始 Agent 训练迭代' },
-            { value: 'auto_label', label: '🤖 补充自动标注', desc: '先对未标注图片做一轮自动标注，再开始训练（推荐）' },
-            { value: 'stop', label: '⏹️ 暂停训练', desc: '先完善数据集，稍后再训练' },
-          ],
-        }
-        showDecisionDialog.value = true
-      } else if (data.type === 'status' || data.type === 'log' || data.type === 'metric') {
+      if (data.type === 'status' || data.type === 'log' || data.type === 'metrics') {
         if (selectedTask.value?.task_id === task.task_id) {
           selectedTask.value = { ...selectedTask.value, ...data }
           if (data.progress !== undefined) {
