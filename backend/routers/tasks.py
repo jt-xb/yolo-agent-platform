@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from datetime import datetime
 from typing import Any, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Body
 from sqlalchemy.orm import Session
 
 from backend.core.database import get_db, Task, TaskLog, TaskMetric, TaskIteration, GeneratedModel
@@ -312,6 +312,32 @@ def _run_regular_training_background(task_id: str, dataset_id: str = None, pretr
         loop = start_agent_training_loop(task_id, task.description or task.name, task.training_config or {}, dataset_id)
         # 覆盖状态
         loop.status = "training"
+
+        # 注册 epoch 回调，流式推送每轮结果
+        def on_epoch_end_cb(trainer):
+            epoch = trainer.epoch
+            total = trainer.epochs
+            metrics_dict = getattr(trainer, 'metrics', {})
+            map50_ep = metrics_dict.get('metrics/mAP50(B)', 0.0)
+            loss_ep = metrics_dict.get('train/box_loss', 0.0)
+            log_msg = f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Epoch {epoch+1}/{total}: loss={loss_ep:.4f}, mAP50={map50_ep:.4f}"
+            # 直接发送 SSE 事件（线程安全）
+            emit_task_event(task_id, "log", {
+                "type": "log",
+                "message": log_msg,
+                "timestamp": datetime.now().isoformat(),
+                "level": "info",
+            })
+            # 推送进度
+            emit_task_event(task_id, "metrics", {
+                "type": "metric",
+                "epoch": epoch + 1,
+                "total_epochs": total,
+                "map50": map50_ep,
+                "loss": loss_ep,
+                "progress": int((epoch + 1) / total * 100),
+            })
+        model.callbacks['on_fit_epoch_end'].append(on_epoch_end_cb)
 
         results = model.train(
             data=str(data_yaml),

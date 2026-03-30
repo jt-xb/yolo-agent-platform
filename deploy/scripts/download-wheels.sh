@@ -1,21 +1,30 @@
 #!/bin/bash
 # download-wheels.sh
 # 在有网络的机器上执行，下载所有 pip wheel 包到 wheels/ 目录
-# 目标架构: aarch64 (ARM Kylin)
-# 用法: ./download-wheels.sh [python_version]
-# 默认: Python 3.10, linux_aarch64
+# 目标架构: aarch64 (ARM Kylin) 或 x86_64
+# 用法: ./download-wheels.sh [python_version] [arch]
+# 默认: Python 3.10, aarch64
 
 set -e
 
 PYTHON_VERSION="${1:-3.10}"
-ARCH="aarch64"   # 麒麟/ARM 服务器
+ARCH="${2:-aarch64}"   # aarch64 = ARM Kylin, x86_64 = x86 Linux
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 WHEELS_DIR="$PROJECT_DIR/wheels"
 
-echo "=== 下载 Python 依赖包 (ARM aarch64) ==="
+# 选择目标 manylinux 平台标签
+if [ "$ARCH" = "x86_64" ]; then
+    PLATFORM="x86_64_manylinux2014"
+    ABI="cp310-cp310"
+else
+    PLATFORM="aarch64_manylinux2014"
+    ABI="cp310-cp310"
+fi
+
+echo "=== 下载 Python 依赖包 ($ARCH) ==="
 echo "Python 版本: $PYTHON_VERSION"
-echo "架构: $ARCH"
+echo "平台: $PLATFORM"
 echo "输出目录: $WHEELS_DIR"
 
 mkdir -p "$WHEELS_DIR"
@@ -28,7 +37,7 @@ NO_BINARY_PKGS=""
 # 分批下载：先只 binary
 pip download \
     --python-version "$PYTHON_VERSION" \
-    --platform "${ARCH}_manylinux2014" \
+    --platform "$PLATFORM" \
     --abi cp310 \
     --only-binary=:all: \
     --no-deps \
@@ -39,7 +48,7 @@ pip download \
 # 下载带依赖的包（关键！）
 pip download \
     --python-version "$PYTHON_VERSION" \
-    --platform "${ARCH}_manylinux2014" \
+    --platform "$PLATFORM" \
     --abi cp310 \
     --only-binary=:all: \
     -r requirements.txt \
@@ -48,12 +57,12 @@ pip download \
 
 echo ""
 echo "=== 尝试源码包（处理没有 binary 的包）==="
-# 对于没有 aarch64 wheel 的包，尝试下载源码
+# 对于没有对应架构 wheel 的包，尝试下载源码
 for pkg in $(grep -v "^#" requirements.txt | grep -v "^$" | cut -d"=" -f1 | head -50); do
     if ! ls "$WHEELS_DIR"/${pkg}-*.whl >/dev/null 2>&1; then
         pip download \
             --python-version "$PYTHON_VERSION" \
-            --platform "${ARCH}_manylinux2014" \
+            --platform "$PLATFORM" \
             --abi cp310 \
             --no-binary :all: \
             -d "$WHEELS_DIR" \

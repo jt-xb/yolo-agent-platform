@@ -60,25 +60,38 @@ docker compose -f docker/docker-compose.offline.yml up -d
 
 ### 1. 准备阶段（在有网络的机器上）
 
+**推荐：一键准备所有离线资源**
+
 ```bash
 git clone https://github.com/jt-xb/yolo-agent-platform.git
-cd yolo-agent-platform
+cd yolo-agent-platform/deploy/scripts
+chmod +x *.sh
 
-# 下载 pip wheel 包（Python 3.10, x86_64 Linux）
-cd deploy/scripts
-chmod +x download-wheels.sh
-./download-wheels.sh
-# 执行后会在 deploy/wheels/ 目录下保存所有 pip wheel
+# 一键准备（下载 wheels + npm + 模型 + Docker 镜像）
+# 默认目标架构: aarch64 (ARM Kylin)
+./prepare-offline.sh
+
+# x86_64 Linux 服务器准备:
+# ./prepare-offline.sh x86_64
+```
+
+**或分步执行：**
+
+```bash
+cd yolo-agent-platform/deploy/scripts
+chmod +x *.sh
+
+# 下载 pip wheel 包（默认 ARM aarch64，或指定 x86_64）
+./download-wheels.sh 3.10 aarch64
 
 # 下载前端 npm 包
-chmod +x download-npm.sh
 ./download-npm.sh
-# 执行后会在 deploy/node_modules/ 目录下保存 npm 包
 
-# 下载模型权重（可选，用于自动标注）
-chmod +x download-models.sh
+# 下载模型权重（用于自动标注）
 ./download-models.sh
-# 执行后会在 deploy/models/ 目录下保存权重文件
+
+# 构建并打包 Docker 镜像（需要 Docker）
+./save-images.sh
 ```
 
 ### 2. 部署阶段（在目标离线服务器上）
@@ -111,13 +124,14 @@ nohup npm run preview -- --port 5173 --host 0.0.0.0 > ../data/logs/frontend.log 
 ```
 deploy/
 ├── scripts/
-│   ├── save-images.sh        # 保存 Docker 镜像为 tar 包
-│   ├── load-images.sh         # 加载 Docker 镜像
-│   ├── download-wheels.sh     # 下载 pip wheel 包（离线用）
-│   ├── download-npm.sh       # 下载 npm 包（离线用）
-│   ├── download-models.sh     # 下载 YOLO/SAM/DINO 模型权重
-│   ├── install-offline.sh     # 一键安装离线依赖
-│   └── start.sh              # 启动服务脚本
+│   ├── prepare-offline.sh      # ⭐ 一键准备所有离线资源（推荐）
+│   ├── save-images.sh          # 保存 Docker 镜像为 tar 包
+│   ├── load-images.sh          # 加载 Docker 镜像
+│   ├── download-wheels.sh      # 下载 pip wheel 包（离线用）
+│   ├── download-npm.sh         # 下载 npm 包（离线用）
+│   ├── download-models.sh       # 下载 YOLO/SAM/DINO 模型权重
+│   ├── install-offline.sh       # 一键安装离线依赖
+│   └── start.sh                # 启动服务脚本
 ├── config/
 │   ├── .env.offline          # 离线环境变量模板
 │   └── nginx.conf            # Nginx 配置（生产环境用）

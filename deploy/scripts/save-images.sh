@@ -10,23 +10,30 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 IMAGES_DIR="$PROJECT_DIR/deploy/images"
 DEPLOY_DOCKER_DIR="$PROJECT_DIR/deploy/docker"
+WHEELS_DIR="$PROJECT_DIR/deploy/wheels"
 
 echo "=== 构建并保存 Docker 镜像 (ARM aarch64) ==="
 mkdir -p "$IMAGES_DIR"
 
 cd "$PROJECT_DIR"
 
+# ===== 准备 wheels 目录（backend Dockerfile 依赖）=====
+if [ ! -d "$WHEELS_DIR" ] || [ "$(ls "$WHEELS_DIR" 2>/dev/null | wc -l)" -lt 10 ]; then
+    echo ""
+    echo ">>> [0/3] 下载 pip wheels（backend 镜像构建所需）..."
+    bash "$SCRIPT_DIR/download-wheels.sh" 2>&1 | tail -5
+fi
+
 # ===== 构建后端镜像 (ARM) =====
 echo ""
 echo ">>> [1/3] 构建后端镜像 (arm64) ..."
 
-# 检查是否已构建过
 BACKEND_IMAGE="yolo-agent-backend:offline"
 docker build \
     -f "$DEPLOY_DOCKER_DIR/Dockerfile.offline.backend" \
     --platform linux/arm64 \
     -t "$BACKEND_IMAGE" \
-    . 2>&1 | tail -5
+    . 2>&1 | tail -10
 
 docker save "$BACKEND_IMAGE" -o "$IMAGES_DIR/yolo-agent-backend.tar"
 echo "后端镜像已保存: yolo-agent-backend.tar ($(du -sh "$IMAGES_DIR/yolo-agent-backend.tar" | cut -f1))"
