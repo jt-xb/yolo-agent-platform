@@ -572,6 +572,13 @@ function mapClass(val) {
 
 function formatTime(ts) {
   if (!ts) return ''
+  // 解析 ISO naive datetime（无时区），直接显示 HH:MM:SS
+  // 不走 new Date()（会当 UTC 处理导致时差）
+  if (typeof ts === 'string' && ts.length >= 8) {
+    // 格式: 2026-03-30T08:29:53 或 08:29:53
+    const match = ts.match(/T(\d{2}:\d{2}:\d{2})/) || ts.match(/^(\d{2}:\d{2}:\d{2})/)
+    if (match) return match[1]
+  }
   return new Date(ts).toLocaleTimeString()
 }
 

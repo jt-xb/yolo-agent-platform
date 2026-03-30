@@ -113,7 +113,7 @@ def _create_task_log(db: Session, task_id: str, level: str, message: str):
     db.add(log)
     db.commit()
     # 推送到 SSE 实时流
-    emit_task_event(task_id, "log", {"type": "log", "level": level, "message": message, "ts": datetime.now().strftime("%H:%M:%S")})
+    emit_task_event(task_id, "log", {"type": "log", "level": level, "message": message, "timestamp": datetime.now().isoformat()})
 
 
 def _update_task_progress(db: Session, task: Task, progress: float, status: str = None):
