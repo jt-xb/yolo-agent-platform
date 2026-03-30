@@ -25,7 +25,7 @@ export default defineConfig({
     },
   },
   build: {
-    target: 'es5',  // 兼容旧版浏览器（飞腾/麒麟系统）
+    target: 'es2015',
     minify: 'esbuild',
     rollupOptions: {
       output: {

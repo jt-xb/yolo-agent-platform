@@ -180,7 +180,8 @@
 
 <script setup>
 import { ref, onMounted, computed } from 'vue'
-import { useRoute, ElMessage, ElMessageBox } from 'element-plus'
+import { useRoute } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import StatusBadge from '../components/common/StatusBadge.vue'
 import EmptyState from '../components/common/EmptyState.vue'
 import { getModels, deployModel as apiDeploy, undeployModel as apiUndeploy, inferModel, inferModelImage, deleteModel as apiDeleteModel, exportModel as apiExportModel, downloadModel } from '../api/models'

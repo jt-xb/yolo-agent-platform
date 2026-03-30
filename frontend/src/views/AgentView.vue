@@ -495,7 +495,7 @@ function handleSSEMessage(data) {
         refreshTaskInfo()
       }
     }
-  } else if (data.type === 'decision_needed' || data.type === 'decision_needed') {
+  } else if (data.type === 'decision_needed') {
     // Agent 需要用户决策
     agentSuggestion.value = data.llm_analysis || data.analysis || ''
     agentOptions.value = data.options || [
