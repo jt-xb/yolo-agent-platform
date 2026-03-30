@@ -28,7 +28,7 @@
     </div>
 
     <div v-else class="models-grid">
-      <div v-for="model in models" :key="model.task_id" class="model-card">
+      <div v-for="model in filteredModels" :key="model.task_id" class="model-card" :class="{ 'model-highlighted': isHighlighted(model) }">
         <div class="model-card-header">
           <div class="model-icon">🤖</div>
           <div class="model-info">
@@ -179,12 +179,13 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ref, onMounted, computed } from 'vue'
+import { useRoute, ElMessage, ElMessageBox } from 'element-plus'
 import StatusBadge from '../components/common/StatusBadge.vue'
 import EmptyState from '../components/common/EmptyState.vue'
 import { getModels, deployModel as apiDeploy, undeployModel as apiUndeploy, inferModel, inferModelImage, deleteModel as apiDeleteModel, exportModel as apiExportModel, downloadModel } from '../api/models'
 
+const route = useRoute()
 const models = ref([])
 const loading = ref(false)
 const deployingId = ref(null)
@@ -195,6 +196,22 @@ const inferUrl = ref('')
 const inferFile = ref(null)
 const inferring = ref(false)
 const inferResults = ref([])
+
+// 从 URL 参数获取 task_id（从训练任务跳转过来时）
+const highlightTaskId = computed(() => route.query.task_id || null)
+
+// 筛选后的模型列表（高亮指定的模型排在前面）
+const filteredModels = computed(() => {
+  if (!highlightTaskId.value) return models.value
+  const highlighted = models.value.filter(m => m.task_id === highlightTaskId.value)
+  const others = models.value.filter(m => m.task_id !== highlightTaskId.value)
+  return [...highlighted, ...others]
+})
+
+// 检查模型是否需要高亮
+function isHighlighted(model) {
+  return highlightTaskId.value && model.task_id === highlightTaskId.value
+}
 
 async function loadModels() {
   loading.value = true
@@ -387,6 +404,13 @@ onMounted(loadModels)
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   padding: var(--space-4);
+  transition: all 0.3s ease;
+}
+
+.model-card.model-highlighted {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px rgba(var(--color-primary-rgb, 64, 158, 255), 0.2);
+  background: linear-gradient(135deg, var(--color-surface) 0%, rgba(var(--color-primary-rgb, 64, 158, 255), 0.05) 100%);
 }
 
 .model-card-header {

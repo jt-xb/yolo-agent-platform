@@ -106,7 +106,7 @@
             v-if="task.status === 'completed'"
             type="success"
             size="small"
-            @click="$router.push('/models')"
+            @click="$router.push({ path: '/models', query: { task_id: task.task_id } })"
           >
             查看模型
           </el-button>
