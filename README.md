@@ -1,137 +1,131 @@
-# YOLO自动化训推平台
+# YOLO Agent Platform
 
-基于大模型Agent的YOLO自动化训推一体化Web平台，支持完全离线环境下从任务输入到模型部署的全流程。
+基于大模型 Agent 的 YOLO 自动化训推一体化 Web 平台，支持完全离线环境下从任务输入到模型部署的全流程。
 
-## 项目结构
+## Features
+
+### Dataset Management
+- **图片浏览**：支持训练集/验证集/测试集过滤，已标注/未标注状态过滤
+- **手动标注**：画框标注，实时预览，支持上一张/下一张导航
+- **类别管理**：在线添加/删除检测类别，自动同步到 YOLO 格式标注文件
+- **视频抽帧**：上传视频自动按帧间隔抽取图片，支持 MP4/AVI/MOV/MKV
+- **自动标注**：基于 Grounding DINO + SAM 的 AI 自动标注
+- **Label Studio 集成**：一键同步数据集到 Label Studio，导出标注结果
+
+### Model Training
+- **Agent 训练循环**：大模型自动决策训练参数和迭代优化流程
+- **实时监控**：SSE 推送训练日志、指标（mAP50、mAP50-95、Precision、Recall）
+- **停止/恢复**：支持中途停止训练，保留已生成模型
+- **增量训练**：支持基于预训练模型继续训练
+
+### Model Management
+- 模型仓库存储所有生成的模型
+- 一键部署到本地推理服务
+- 支持 YOLOv8 全系列模型
+
+## Tech Stack
+
+| Layer | Tech |
+|-------|------|
+| Frontend | Vue 3 + Element Plus |
+| Backend | FastAPI + Uvicorn |
+| Database | SQLite |
+| Agent | LangChain (ReAct) |
+| LLM | DeepSeek V3.2 |
+| Training | Ultralytics YOLO |
+| Real-time | SSE (Server-Sent Events) |
+| Container | Docker + Docker Compose |
+
+## Project Structure
 
 ```
 yolo-agent-platform/
-├── backend/                 # FastAPI 后端
-│   ├── agents/             # 大模型Agent核心
-│   │   └── trainer_agent.py # 训练流程Agent (LangChain ReAct)
-│   ├── models/             # Pydantic 数据模型
-│   │   ├── task.py         # 任务模型
-│   │   └── dataset.py      # 数据集模型
-│   ├── routers/           # API路由
-│   │   ├── tasks.py        # 任务管理API
-│   │   ├── datasets.py      # 数据管理API
-│   │   ├── models.py        # 模型管理API
-│   │   └── websocket.py     # WebSocket实时通信
-│   ├── services/          # 业务逻辑服务
-│   │   ├── task_service.py  # 任务服务
-│   │   ├── training_service.py # 训练服务
-│   │   └── yolo_service.py   # YOLO相关服务
-│   ├── core/              # 核心配置
-│   │   ├── config.py       # 应用配置
-│   │   ├── database.py     # 数据库连接
-│   │   └── llm.py          # LLM调用封装
-│   └── main.py            # FastAPI 入口
-├── frontend/              # Vue3 + Element Plus 前端
-├── docker/               # Docker 相关文件
-│   ├── backend.Dockerfile
-│   ├── frontend.Dockerfile
-│   └── docker-compose.yml
-└── docs/                 # 文档
+├── backend/
+│   ├── agents/               # LLM Agent core
+│   ├── routers/             # API routes
+│   │   ├── tasks.py         # Task management
+│   │   ├── datasets.py      # Dataset management
+│   │   ├── models.py        # Model management
+│   │   └── label_studio.py  # Label Studio integration
+│   ├── services/
+│   │   ├── training_loop.py # Agent training loop
+│   │   └── label_studio.py  # Label Studio sync/export
+│   └── main.py              # FastAPI entry
+├── frontend/
+│   └── src/
+│       ├── views/
+│       │   ├── DatasetsView.vue  # Dataset browsing & annotation
+│       │   ├── TasksView.vue     # Training tasks
+│       │   └── ModelsView.vue    # Model management
+│       └── api/
+└── docker/
 ```
 
-## 核心模块说明
+## Quick Start
 
-### 1. 任务管理 (Task Management)
-- 用户提交任务描述（自然语言）
-- Agent自动解析任务、创建训练配置、启动训练
-- 全流程状态跟踪
+### 1. Backend
 
-### 2. 数据管理 (Data Management)
-- 支持图片/视频数据上传或本地路径指定
-- 自动标注（基于视觉模型）
-- 标注结果可视化与人工校验
-
-### 3. 模型训练 (Model Training)
-- 基于LangChain ReAct Agent自动决策训练流程
-- 训练参数由Agent根据任务描述推荐
-- 实时日志与指标监控（WebSocket推送）
-
-### 4. 模型管理 (Model Management)
-- 模型仓库：存储所有生成的模型
-- 一键部署到本地推理服务
-
-### 5. 系统设置 (System Settings)
-- 离线模型管理
-- 算力资源监控（GPU/MLU）
-- 用户管理（可选）
-
-## 技术栈
-
-| 层级 | 技术选型 |
-|------|---------|
-| 前端框架 | Vue 3 + Element Plus |
-| 后端框架 | FastAPI + Uvicorn |
-| 数据库 | SQLite |
-| Agent框架 | LangChain (ReAct) |
-| LLM | DeepSeek V3.2 |
-| 训练框架 | Ultralytics YOLO |
-| 加速卡 | MLU370 (寒武纪) |
-| 实时通信 | WebSocket |
-| 容器化 | Docker + Docker Compose |
-
-## 开发环境
-
-- Python 3.10+
-- Node.js 18+
-- MLU370 SDK (Cambricon Pytorch SDK)
-- Docker & Docker Compose
-
-## 快速启动
-
-### 1. 配置 API Key
-
-复制配置模板并填入你的 DeepSeek API Key：
-```bash
-cd backend
-cp .env.example .env
-# 编辑 .env，填入 LLM_API_KEY
-```
-
-### 2. 本地开发（前端演示模式）
-
-**后端：**
 ```bash
 cd backend
 pip install -r requirements.txt
-python main.py
+PYTHONPATH=. python -m uvicorn backend.main:app --port 8000
 ```
 
-**前端（新终端）：**
+### 2. Frontend
+
 ```bash
 cd frontend
 npm install
 npm run dev
 ```
 
-访问 http://localhost:5173 即可看到前端界面。
+Visit http://localhost:5173
 
-### 3. Docker 部署
+### 3. Docker
+
 ```bash
 cd docker
 docker-compose up -d
 ```
 
-访问 http://localhost:3000
+Visit http://localhost:3000
 
-### 4. MLU370 加速（等卡到手后）
-在 `.env` 中设置 `USE_MLU=true`，同时确保安装了寒武纪 SDK。
+## API Endpoints
 
-## Agent 工具设计
+### Tasks
+- `POST /api/tasks/` — Create task
+- `GET /api/tasks/` — List tasks
+- `GET /api/tasks/{id}` — Get task details
+- `POST /api/tasks/{id}/start` — Start training
+- `POST /api/tasks/{id}/stop` — Stop training
+- `GET /api/tasks/{id}/stream` — SSE real-time logs
 
-Agent可用工具：
-1. `create_training_task` - 创建训练任务
-2. `start_training` - 启动训练
-3. `stop_training` - 停止训练
-4. `get_training_logs` - 获取训练日志
-5. `get_training_metrics` - 获取训练指标
-6. `download_model` - 下载模型
-7. `deploy_model` - 部署模型
+### Datasets
+- `GET /api/datasets/all` — List all datasets
+- `POST /api/datasets/create` — Create dataset
+- `GET /api/datasets/{id}/images` — List images with split/status filters
+- `POST /api/datasets/upload-images` — Upload images
+- `GET /api/datasets/{id}/meta` — Get dataset metadata (class names)
+- `PUT /api/datasets/{id}/meta` — Update dataset metadata
+- `POST /api/datasets/video-extract` — Extract frames from video
+- `POST /api/datasets/dino-sam-auto-label` — AI auto-labeling
 
-## License
+### Models
+- `GET /api/models/` — List models
+- `POST /api/models/deploy` — Deploy model for inference
 
-MIT
+## Annotation Workflow
+
+1. Select a dataset → switch to "浏览图片" tab
+2. Use split/status filters to find target images
+3. Click an image → enable "标注模式"
+4. Add classes via the class manager panel
+5. Draw bounding boxes on the image
+6. Click "保存标注" → saved as YOLO format
+
+## Label Studio Integration
+
+1. Enable Label Studio tab → enter URL and API Key → test connection
+2. Select dataset → enter class names → choose split (train/val/test)
+3. Click "一键同步到 Label Studio"
+4. Annotate in Label Studio → export annotations back
