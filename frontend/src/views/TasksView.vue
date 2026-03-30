@@ -218,6 +218,10 @@
               />
             </div>
           </div>
+          <div class="detail-row" v-if="selectedTask.error_message">
+            <span class="detail-label">失败原因</span>
+            <span class="error-message">{{ selectedTask.error_message }}</span>
+          </div>
         </div>
 
         <!-- Metrics -->
@@ -692,6 +696,12 @@ onUnmounted(() => { if (stream) stream.close() })
 
 .progress-inline {
   flex: 1;
+}
+
+.error-message {
+  font-size: var(--text-sm);
+  color: var(--color-danger);
+  word-break: break-all;
 }
 
 .metrics-grid {

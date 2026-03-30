@@ -63,23 +63,27 @@ def get_demo_dataset():
                     })
         return boxes
 
-    def build_image_list(img_dir, label_dir, split):
+    def build_image_list(img_dir, label_dir, split, max_images=100):
         """构建图片列表"""
         images = []
         if not img_dir.exists():
             return images
-        for img_file in sorted(img_dir.glob("*.jpg"))[:20]:  # 最多20张
-            label_file = label_dir / f"{img_file.stem}.txt"
-            boxes = load_label(label_file)
-            images.append({
-                "id": img_file.stem,
-                "filename": img_file.name,
-                "path": str(img_file.resolve()),
-                "url": f"/api/datasets/image/{img_file.stem}",
-                "split": split,
-                "num_objects": len(boxes),
-                "boxes": boxes,
-            })
+        # 支持多种图片格式
+        for ext in ['*.jpg', '*.jpeg', '*.png', '*.bmp', '*.webp']:
+            for img_file in sorted(img_dir.glob(ext)):
+                label_file = label_dir / f"{img_file.stem}.txt"
+                boxes = load_label(label_file)
+                images.append({
+                    "id": img_file.stem,
+                    "filename": img_file.name,
+                    "path": str(img_file.resolve()),
+                    "url": f"/api/datasets/file/demo/train/{img_file.name}" if split == "train" else f"/api/datasets/file/demo/val/{img_file.name}",
+                    "split": split,
+                    "num_objects": len(boxes),
+                    "boxes": boxes,
+                })
+                if len(images) >= max_images:
+                    return images
         return images
 
     train_images = build_image_list(train_img_dir, train_label_dir, "train")
