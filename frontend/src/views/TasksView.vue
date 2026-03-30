@@ -72,7 +72,7 @@
 
         <div class="task-actions" @click.stop>
           <el-button
-            v-if="task.status === 'pending'"
+            v-if="task.status === 'pending' || task.status === 'stopped'"
             type="primary"
             size="small"
             @click="startTraining(task)"
@@ -81,6 +81,21 @@
           </el-button>
           <el-button
             v-if="task.status === 'training'"
+            size="small"
+            @click="pauseTask(task)"
+          >
+            暂停
+          </el-button>
+          <el-button
+            v-if="task.status === 'paused'"
+            type="success"
+            size="small"
+            @click="resumeTask(task)"
+          >
+            恢复
+          </el-button>
+          <el-button
+            v-if="task.status === 'training' || task.status === 'paused'"
             type="danger"
             size="small"
             @click="stopTraining(task)"
@@ -94,6 +109,15 @@
             @click="$router.push('/models')"
           >
             查看模型
+          </el-button>
+          <el-button
+            v-if="task.status !== 'training' && task.status !== 'paused'"
+            type="danger"
+            text
+            size="small"
+            @click="deleteTask(task)"
+          >
+            删除
           </el-button>
         </div>
       </div>
@@ -154,6 +178,12 @@
             :step="10"
             style="width: 100%"
           />
+        </el-form-item>
+        <el-form-item label="训练模式">
+          <el-radio-group v-model="createForm.trainingType">
+            <el-radio label="agent">🤖 Agent 智能训练（自动调参迭代）</el-radio>
+            <el-radio label="regular">⚡ 常规训练（固定参数，单次）</el-radio>
+          </el-radio-group>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -244,16 +274,33 @@
           </div>
         </div>
       </div>
+      <template #footer>
+        <div class="detail-footer">
+          <div class="footer-left">
+            <el-tag v-if="selectedTask?.training_type === 'agent'" type="primary">🤖 Agent</el-tag>
+            <el-tag v-else type="warning">⚡ 常规</el-tag>
+          </div>
+          <el-button
+            v-if="selectedTask?.status !== 'training' && selectedTask?.status !== 'paused'"
+            type="danger"
+            text
+            size="small"
+            @click="deleteTask(selectedTask); showDetailDialog = false"
+          >
+            删除任务
+          </el-button>
+        </div>
+      </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import StatusBadge from '../components/common/StatusBadge.vue'
 import EmptyState from '../components/common/EmptyState.vue'
-import { getTasks, createTask as apiCreateTask, startTask, stopTask, getTaskLogs, getTaskMetrics, getTaskIterations, createTaskStream } from '../api/tasks'
+import { getTasks, createTask as apiCreateTask, startTask, stopTask, deleteTask as apiDeleteTask, pauseTask as apiPauseTask, resumeTask as apiResumeTask, getTaskLogs, getTaskMetrics, getTaskIterations, createTaskStream } from '../api/tasks'
 import { getDatasets } from '../api/datasets'
 
 const tasks = ref([])
@@ -275,6 +322,7 @@ const createForm = ref({
   datasetId: 'demo',
   yolo_model: 'yolov8n',
   epochs: 100,
+  trainingType: 'agent',
 })
 
 async function loadDatasets() {
@@ -319,10 +367,11 @@ async function createTask() {
       dataset_id: createForm.value.datasetId,
       yolo_model: createForm.value.yolo_model,
       epochs: createForm.value.epochs,
+      training_type: createForm.value.trainingType,
     })
     ElMessage.success('任务创建成功')
     showCreateDialog.value = false
-    createForm.value = { name: '', description: '', classes: '', datasetId: createForm.value.datasetId || 'demo', yolo_model: 'yolov8n', epochs: 100 }
+    createForm.value = { name: '', description: '', classes: '', datasetId: createForm.value.datasetId || 'demo', yolo_model: 'yolov8n', epochs: 100, trainingType: 'agent' }
     await loadTasks()
   } catch (e) {
     ElMessage.error('创建失败: ' + e.message)
@@ -350,6 +399,39 @@ async function stopTraining(task) {
     await loadTasks()
   } catch (e) {
     ElMessage.error('停止失败: ' + e.message)
+  }
+}
+
+async function pauseTask(task) {
+  try {
+    await apiPauseTask(task.task_id)
+    ElMessage.success('训练已暂停')
+    await loadTasks()
+  } catch (e) {
+    ElMessage.error('暂停失败: ' + e.message)
+  }
+}
+
+async function resumeTask(task) {
+  try {
+    await apiResumeTask(task.task_id)
+    ElMessage.success('训练已恢复')
+    await loadTasks()
+  } catch (e) {
+    ElMessage.error('恢复失败: ' + e.message)
+  }
+}
+
+async function deleteTask(task) {
+  try {
+    await ElMessageBox.confirm(`确定要删除任务"${task.name}"吗？`, '删除确认', { type: 'warning' })
+    await apiDeleteTask(task.task_id)
+    ElMessage.success('删除成功')
+    await loadTasks()
+  } catch (e) {
+    if (e !== 'cancel') {
+      ElMessage.error('删除失败: ' + e.message)
+    }
   }
 }
 
@@ -669,4 +751,17 @@ onUnmounted(() => { if (stream) stream.close() })
 
 .log-error { color: #f48771; }
 .log-warning { color: #dcdcaa; }
+
+.detail-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.footer-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
 </style>

@@ -111,6 +111,8 @@ class AgentTrainingLoop:
 
         # 停止事件
         self._stop_event = threading.Event()
+        # 暂停事件
+        self._pause_event = threading.Event()
 
         # 目标要求
         self.requirements = TargetRequirements()
@@ -200,6 +202,18 @@ class AgentTrainingLoop:
             iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🔥 启动 YOLOv8 真实训练（最多 {min(total_epochs, 50)} epochs）...")
 
             model = YOLO(model_path)
+
+            # Pause check before training
+            if self._pause_event.is_set():
+                self.status = "paused"
+                iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⏸️ 训练已暂停，等待恢复...")
+                while self._pause_event.is_set() and not self._stop_event.is_set():
+                    time_module.sleep(1)
+                if self._stop_event.is_set():
+                    return False
+                self.status = "running"
+                iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ▶️ 训练已恢复")
+
             results = model.train(
                 data=data_yaml,
                 epochs=min(total_epochs, 50),  # 限制最多50轮
@@ -616,6 +630,17 @@ names: {self.class_names}
             self.status = "stopped"
             return self._build_final_result()
 
+        # 检查暂停信号
+        if self._pause_event.is_set():
+            self.status = "paused"
+            while self._pause_event.is_set() and not self._stop_event.is_set():
+                import time as time_module
+                time_module.sleep(1)
+            if self._stop_event.is_set():
+                self.status = "stopped"
+                return self._build_final_result()
+            self.status = "running"
+
         # ========================================
         # 阶段2：训练迭代循环
         # ========================================
@@ -636,6 +661,19 @@ names: {self.class_names}
             if self._stop_event.is_set():
                 self.status = "stopped"
                 break
+
+            # 检查暂停信号
+            if self._pause_event.is_set():
+                self.status = "paused"
+                iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ⏸️ 训练已暂停，等待恢复...")
+                while self._pause_event.is_set() and not self._stop_event.is_set():
+                    import time as time_module
+                    time_module.sleep(1)
+                if self._stop_event.is_set():
+                    self.status = "stopped"
+                    break
+                self.status = "running"
+                iteration.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] ▶️ 训练已恢复")
 
             # 执行训练
             self._run_training(iteration)
@@ -707,3 +745,28 @@ def stop_agent_training_loop(task_id: str) -> bool:
         del _active_loops[task_id]
         return True
     return False
+
+
+def pause_agent_training_loop(task_id: str) -> bool:
+    """暂停训练循环"""
+    loop = _active_loops.get(task_id)
+    if loop:
+        loop._pause_event.set()
+        loop.status = "paused"
+        return True
+    return False
+
+
+def resume_agent_training_loop(task_id: str) -> bool:
+    """恢复训练循环"""
+    loop = _active_loops.get(task_id)
+    if loop and loop.status == "paused":
+        loop._pause_event.clear()
+        loop.status = "running"
+        return True
+    return False
+
+
+def get_agent_training_loop(task_id: str):
+    """获取运行中的训练循环"""
+    return _active_loops.get(task_id)

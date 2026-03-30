@@ -1,1 +1,6 @@
 *.pt
+
+# Environment files (contain API keys)
+docker/.env
+backend/.env
+

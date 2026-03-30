@@ -57,6 +57,7 @@ class Task(Base):
     epochs = Column(Integer, default=settings.default_epochs)
     batch_size = Column(Integer, default=settings.default_batch_size)
     image_size = Column(Integer, default=settings.default_image_size)
+    training_type = Column(String(16), default="agent")  # "agent" | "regular"
     training_config = Column(JSON, default={})  # Agent生成的其他配置
     
     # 模型输出
@@ -99,6 +100,7 @@ class Task(Base):
             "epochs": self.epochs,
             "batch_size": self.batch_size,
             "image_size": self.image_size,
+            "training_type": self.training_type,
             "training_config": self.training_config,
             "output_model_path": self.output_model_path,
             "output_model_size": self.output_model_size,
@@ -241,24 +243,24 @@ class Dataset(Base):
 class GeneratedModel(Base):
     """生成的模型"""
     __tablename__ = "generated_models"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     task_id = Column(String(64), ForeignKey("tasks.task_id"), nullable=False)
     name = Column(String(256), nullable=False)
     model_path = Column(String(512), nullable=False)
     model_type = Column(String(32), default="yolov8")
     file_size = Column(String(64), nullable=True)  # 如 "25.6 MB"
-    
+
     # 指标
     map50 = Column(Float, nullable=True)
     map50_95 = Column(Float, nullable=True)
-    
+
     # 状态
     is_deployed = Column(Boolean, default=False)
     deployed_at = Column(DateTime, nullable=True)
-    
+
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+
     def to_dict(self):
         return {
             "id": self.id,
@@ -272,4 +274,26 @@ class GeneratedModel(Base):
             "is_deployed": self.is_deployed,
             "deployed_at": self.deployed_at.isoformat() if self.deployed_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class LLMConfig(Base):
+    """LLM 配置"""
+    __tablename__ = "llm_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+    api_key = Column(String(256), nullable=True)
+    api_base = Column(String(512), nullable=True)
+    model = Column(String(64), nullable=True)
+    enabled = Column(Boolean, default=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "api_key": self.api_key or "",
+            "api_base": self.api_base or "",
+            "model": self.model or "",
+            "enabled": self.enabled,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

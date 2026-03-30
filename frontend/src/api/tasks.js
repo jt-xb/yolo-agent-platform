@@ -28,6 +28,14 @@ export async function deleteTask(taskId) {
   return request(`/tasks/${taskId}`, { method: 'DELETE' })
 }
 
+export async function pauseTask(taskId) {
+  return request(`/tasks/${taskId}/pause`, { method: 'POST' })
+}
+
+export async function resumeTask(taskId) {
+  return request(`/tasks/${taskId}/resume`, { method: 'POST' })
+}
+
 export async function getTaskLogs(taskId, lines = 200) {
   return request(`/tasks/${taskId}/logs?lines=${lines}`)
 }

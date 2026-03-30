@@ -25,6 +25,10 @@
           <span class="menu-icon">M</span>
           <template #title>模型中心</template>
         </el-menu-item>
+        <el-menu-item index="/settings">
+          <span class="menu-icon">S</span>
+          <template #title>系统设置</template>
+        </el-menu-item>
       </el-menu>
 
       <div class="sidebar-footer">
@@ -70,6 +74,7 @@ const pageTitleMap = {
   '/tasks': '训练任务中心',
   '/datasets': '数据集管理',
   '/models': '模型中心',
+  '/settings': '系统设置',
 }
 
 const pageTitle = computed(() => pageTitleMap[route.path] || 'YOLO Agent')

@@ -3,6 +3,7 @@ FastAPI 应用入口
 YOLO自动化训推平台 - 后端服务
 """
 import asyncio
+import os
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -20,6 +21,8 @@ from backend.core.config import settings
 from backend.core.database import init_db
 from backend.routers import tasks
 from backend.routers import datasets, models, inference_api
+from backend.routers import label_studio
+from backend.routers import system_settings
 
 
 # ============================================
@@ -111,6 +114,8 @@ app.include_router(tasks.router)
 app.include_router(models.router)
 app.include_router(inference_api.router)
 app.include_router(datasets.router)
+app.include_router(label_studio.router)
+app.include_router(system_settings.router)
 
 
 # ============================================
@@ -166,6 +171,14 @@ async def get_system_metrics():
         "gpu_memory_percent": 45.2,
         "disk_percent": 33.1,
     }
+
+
+# ============================================
+# Label Studio 集成
+# 注：所有 LS 相关接口已移至 backend/routers/label_studio.py
+# ============================================
+
+LABEL_STUDIO_URL = os.getenv("LABEL_STUDIO_URL", "http://label-studio:8080")
 
 
 # ============================================
