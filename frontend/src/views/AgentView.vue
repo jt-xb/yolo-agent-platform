@@ -11,7 +11,7 @@
           {{ statusText }}
         </el-tag>
         <el-button
-          v-if="currentTask?.status === 'pending' || currentTask?.status === 'stopped'"
+          v-if="!currentTask || currentTask?.status === 'pending' || currentTask?.status === 'stopped'"
           type="primary"
           @click="startAgentTraining"
           :loading="starting"
