@@ -918,11 +918,11 @@ names: {self.class_names}
             # 执行训练
             self._run_training(iteration, progress_callback)
 
+            # 评估并决策（必须在 progress_callback 之前，以便 decision 正确传递）
+            decision = self._evaluate_and_decide(iteration)
+
             if progress_callback:
                 progress_callback(iteration.to_dict(), len(self.iterations), self.requirements.max_iterations)
-
-            # 评估并决策
-            decision = self._evaluate_and_decide(iteration)
 
             if decision == IterationDecision.PASS:
                 self.status = "completed"

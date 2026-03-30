@@ -1,0 +1,7 @@
+# YOLO Dataset for task_20260326_220631_bef83a
+path: /private/tmp
+train: images/train
+val: images/val
+
+nc: 1
+names: ['未戴安全帽']

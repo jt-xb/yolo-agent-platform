@@ -5,55 +5,67 @@ import os
 import uuid
 import time
 import threading
+import asyncio
+import queue as sync_queue
+import json
 from pathlib import Path
 from datetime import datetime
 from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Body
 from sqlalchemy.orm import Session
+from starlette.responses import StreamingResponse
 
 from backend.core.database import get_db, Task, TaskLog, TaskMetric, TaskIteration, GeneratedModel
 from backend.core.config import settings
 from backend.services.training_loop import (
     start_agent_training_loop,
     get_agent_training_loop,
-    AgentTrainingLoop,
-    IterationDecision,
 )
 
 router = APIRouter(prefix="/api/tasks", tags=["任务管理"])
 
 # ============================================
-# SSE 实时日志：threading.Queue 跨线程安全通信
+# SSE 实时日志：每 task_id 独立队列
 # ============================================
-import asyncio
-import queue as sync_queue
-import json
-import threading
-from starlette.responses import StreamingResponse
 
-# task_id → (sync_queue.Queue, threading.Event for end signal)
+# task_id → (sync_queue.Queue, threading.Event)
 _task_queues: dict[str, tuple[sync_queue.Queue, threading.Event]] = {}
+_streams_lock = threading.Lock()
+
+
+def _get_or_create_queue(task_id: str) -> tuple[sync_queue.Queue, threading.Event]:
+    """获取或创建 SSE 队列（线程安全）"""
+    with _streams_lock:
+        if task_id not in _task_queues:
+            q = sync_queue.Queue(maxsize=500)
+            ev = threading.Event()
+            _task_queues[task_id] = (q, ev)
+        return _task_queues[task_id]
+
+
+def _close_queue(task_id: str):
+    """关闭并清理 SSE 队列"""
+    with _streams_lock:
+        if task_id in _task_queues:
+            q, ev = _task_queues.pop(task_id)
+            ev.set()
+            try:
+                q.put_nowait("__END__")
+            except:
+                pass
 
 
 @router.get("/{task_id}/stream")
-async def stream_task_events(task_id: str):
+async def stream_task_events(task_id: str, db: Session = Depends(get_db)):
     """
     SSE 实时流：推送训练日志、指标、状态更新
-
-    前端 EventSource 接收示例：
-      const es = new EventSource(`/api/tasks/${taskId}/stream`)
-      es.addEventListener('log', e => appendLog(e.data))
-      es.addEventListener('metrics', e => updateMetrics(JSON.parse(e.data)))
-      es.addEventListener('status', e => updateStatus(e.data))
-      es.addEventListener('end', () => es.close())
+    每个任务 ID 独立队列，第二次打开也能正常接收。
     """
-    q: sync_queue.Queue = sync_queue.Queue()
-    end_event: threading.Event = threading.Event()
-    _task_queues[task_id] = (q, end_event)
+    q, ev = _get_or_create_queue(task_id)
 
     async def event_generator():
+        yield "event: connected\ndata: \n\n"
         try:
-            yield "event: connected\ndata: \n\n"
             while True:
                 try:
                     item = q.get(timeout=60)
@@ -67,8 +79,10 @@ async def stream_task_events(task_id: str):
 
                 etype, edata = item
                 yield f"event: {etype}\ndata: {edata}\n\n"
+        except asyncio.CancelledError:
+            pass
         finally:
-            _task_queues.pop(task_id, None)
+            _close_queue(task_id)
 
     return StreamingResponse(
         event_generator(),
@@ -82,18 +96,18 @@ async def stream_task_events(task_id: str):
 
 
 def emit_task_event(task_id: str, event_type: str, data: Any):
-    """向 SSE 队列推送事件（线程安全，供 _run_agent_loop_background 调用）"""
+    """向 SSE 队列推送事件（线程安全）"""
     entry = _task_queues.get(task_id)
     if entry:
         q, _ = entry
         try:
-            q.put_nowait((event_type, json.dumps(data, ensure_ascii=False)))
+            q.put_nowait((event_type, json.dumps(data, ensure_ascii=False, default=str)))
         except sync_queue.Full:
             pass
 
 
 def emit_task_end(task_id: str):
-    """通知 SSE 连接结束"""
+    """通知 SSE 连接结束（异步清理）"""
     entry = _task_queues.get(task_id)
     if entry:
         _, end_event = entry
@@ -102,6 +116,7 @@ def emit_task_end(task_id: str):
             entry[0].put_nowait("__END__")
         except sync_queue.Full:
             pass
+        threading.Thread(target=_close_queue, args=(task_id,), daemon=True).start()
 
 
 # ============================================
@@ -109,114 +124,94 @@ def emit_task_end(task_id: str):
 # ============================================
 
 def _create_task_log(db: Session, task_id: str, level: str, message: str):
+    """写日志到 DB + 推 SSE"""
     log = TaskLog(task_id=task_id, level=level, message=message)
     db.add(log)
     db.commit()
-    # 推送到 SSE 实时流
-    emit_task_event(task_id, "log", {"type": "log", "level": level, "message": message, "timestamp": datetime.now().isoformat()})
-
-
-def _update_task_progress(db: Session, task: Task, progress: float, status: str = None):
-    task.progress = progress
-    if status:
-        task.status = status
-    db.commit()
+    emit_task_event(task_id, "log", {
+        "type": "log",
+        "level": level,
+        "message": message,
+        "timestamp": datetime.now().isoformat(),
+    })
 
 
 def _run_agent_loop_background(task_id: str, description: str, class_names: List[str], dataset_id: str = None, pretrained_model: str = ""):
-    """
-    后台运行 Agent 训练循环（真正的训练→评估→迭代流程）
-    """
+    """后台运行 Agent 训练循环"""
     from backend.core.database import SessionLocal
-
     db = SessionLocal()
     try:
-        # 启动 Agent 训练循环
         loop = start_agent_training_loop(task_id, description, class_names, dataset_id)
-
         task = db.query(Task).filter(Task.task_id == task_id).first()
         if not task:
             return
-
         task.status = "training"
         task.started_at = datetime.utcnow()
         db.commit()
 
-        # 训练循环进度回调
         def progress_callback(iteration_data: dict, current_iter: int, total_iters: int):
-            # 计算总体进度
-            iter_progress = (current_iter / total_iters) * 100
-            task.progress = min(iter_progress * 0.9, 90)  # 留10%给最后收尾
-            task.map50 = iteration_data.get("metrics", {}).get("map50")
-            task.map50_95 = iteration_data.get("metrics", {}).get("map50_95")
-            task.precision = iteration_data.get("metrics", {}).get("precision")
-            task.recall = iteration_data.get("metrics", {}).get("recall")
-            db.commit()
+            db2 = SessionLocal()
+            try:
+                iter_progress = (current_iter / total_iters) * 100
+                task2 = db2.query(Task).filter(Task.task_id == task_id).first()
+                if task2:
+                    task2.progress = min(iter_progress * 0.9, 90)
+                    task2.map50 = iteration_data.get("metrics", {}).get("map50")
+                    task2.map50_95 = iteration_data.get("metrics", {}).get("map50_95")
+                    task2.precision = iteration_data.get("metrics", {}).get("precision")
+                    task2.recall = iteration_data.get("metrics", {}).get("recall")
+                    db2.commit()
 
-            # 记录日志
-            for log_msg in iteration_data.get("logs", []):
-                _create_task_log(db, task_id, "info", log_msg)
+                for log_msg in iteration_data.get("logs", []):
+                    _create_task_log(db2, task_id, "info", log_msg)
 
-            # 推送指标更新（SSE）
-            metrics = iteration_data.get("metrics", {})
-            if metrics.get("map50"):
-                emit_task_event(task_id, "metrics", {
-                    "type": "metric",
-                    "iteration": current_iter,
-                    "total": total_iters,
-                    "progress": round(min((current_iter / total_iters) * 100, 95), 1),
-                    "map50": metrics.get("map50"),
-                    "map50_95": metrics.get("map50_95"),
-                    "precision": metrics.get("precision"),
-                    "recall": metrics.get("recall"),
-                    "train_loss": metrics.get("train_loss"),
-                    "val_loss": metrics.get("val_loss"),
-                })
+                metrics = iteration_data.get("metrics", {})
+                if metrics.get("map50"):
+                    emit_task_event(task_id, "metrics", {
+                        "type": "metric",
+                        "iteration": current_iter,
+                        "total": total_iters,
+                        "progress": round(min((current_iter / total_iters) * 100, 95), 1),
+                        "map50": metrics.get("map50"),
+                        "map50_95": metrics.get("map50_95"),
+                        "precision": metrics.get("precision"),
+                        "recall": metrics.get("recall"),
+                        "train_loss": metrics.get("train_loss"),
+                        "val_loss": metrics.get("val_loss"),
+                    })
 
-            # 记录指标
-            if iteration_data.get("metrics", {}).get("map50"):
-                metric = TaskMetric(
-                    task_id=task_id,
-                    epoch=current_iter,
-                    iteration=current_iter,
-                    map50=iteration_data["metrics"].get("map50"),
-                    map50_95=iteration_data["metrics"].get("map50_95"),
-                    precision=iteration_data["metrics"].get("precision"),
-                    recall=iteration_data["metrics"].get("recall"),
-                    train_loss=iteration_data["metrics"].get("train_loss"),
-                    val_loss=iteration_data["metrics"].get("val_loss"),
-                )
-                db.add(metric)
+                if metrics.get("map50"):
+                    metric = TaskMetric(
+                        task_id=task_id, epoch=current_iter, iteration=current_iter,
+                        map50=metrics.get("map50"), map50_95=metrics.get("map50_95"),
+                        precision=metrics.get("precision"), recall=metrics.get("recall"),
+                        train_loss=metrics.get("train_loss"), val_loss=metrics.get("val_loss"),
+                    )
+                    db2.add(metric)
 
-                # 保存迭代配置到 task_iterations 表
-                iter_record = TaskIteration(
-                    task_id=task_id,
-                    iteration=current_iter,
-                    yolo_model=iteration_data.get("config", {}).get("yolo_model", task.yolo_model),
-                    epochs=iteration_data.get("config", {}).get("epochs", task.epochs),
-                    batch_size=iteration_data.get("config", {}).get("batch_size", task.batch_size),
-                    map50=iteration_data.get("metrics", {}).get("map50"),
-                    map50_95=iteration_data.get("metrics", {}).get("map50_95"),
-                    precision=iteration_data.get("metrics", {}).get("precision"),
-                    recall=iteration_data.get("metrics", {}).get("recall"),
-                    decision=iteration_data.get("decision", "pass"),
-                    config_snapshot=iteration_data.get("config", {}),
-                )
-                db.add(iter_record)
-                db.commit()
+                    iter_record = TaskIteration(
+                        task_id=task_id, iteration=current_iter,
+                        yolo_model=iteration_data.get("config", {}).get("yolo_model", ""),
+                        epochs=iteration_data.get("config", {}).get("epochs", 0),
+                        batch_size=iteration_data.get("config", {}).get("batch_size", 0),
+                        map50=metrics.get("map50"), map50_95=metrics.get("map50_95"),
+                        precision=metrics.get("precision"), recall=metrics.get("recall"),
+                        decision=iteration_data.get("decision", "pass"),
+                        config_snapshot=iteration_data.get("config", {}),
+                    )
+                    db2.add(iter_record)
+                    db2.commit()
+            finally:
+                db2.close()
 
-        # 执行训练循环
         result = loop.run(progress_callback=progress_callback)
 
-        # 训练结束，更新状态
         task = db.query(Task).filter(Task.task_id == task_id).first()
         if task:
             final_status = result.get("status", "completed")
             task.progress = 100.0
             task.status = final_status
             task.completed_at = datetime.utcnow()
-
-            # 保存最优结果（仅当非停止状态时）
             if final_status != "stopped":
                 best = result.get("best_metrics", {})
                 task.map50 = best.get("map50")
@@ -224,36 +219,29 @@ def _run_agent_loop_background(task_id: str, description: str, class_names: List
                 task.precision = best.get("precision")
                 task.recall = best.get("recall")
                 task.output_model_path = result.get("final_model_path")
-
                 total_iters = result.get("total_iterations", 0)
                 _create_task_log(db, task_id, "info", f"🎉 训练完成！共迭代 {total_iters} 次，最佳 mAP50={best.get('map50', 0):.4f}")
-
-                # 自动创建模型记录
                 if result.get("final_model_path"):
                     model = GeneratedModel(
-                        task_id=task_id,
-                        name=task.name,
+                        task_id=task_id, name=task.name,
                         model_path=result.get("final_model_path", ""),
-                        model_type="yolov8",
-                        file_size="45.2 MB",
-                        map50=best.get("map50"),
-                        map50_95=best.get("map50_95"),
+                        model_type="yolov8", file_size="45.2 MB",
+                        map50=best.get("map50"), map50_95=best.get("map50_95"),
                     )
                     db.add(model)
             else:
                 _create_task_log(db, task_id, "info", "⚠️ 训练已停止")
-
             db.commit()
             emit_task_event(task_id, "status", {"type": "status", "status": final_status, "progress": 100})
             emit_task_end(task_id)
-
     except Exception as e:
-        db = SessionLocal()
+        import traceback
         task = db.query(Task).filter(Task.task_id == task_id).first()
         if task:
             task.status = "failed"
             task.error_message = str(e)
             _create_task_log(db, task_id, "error", f"❌ 训练出错：{str(e)}")
+            _create_task_log(db, task_id, "error", f"详细：{traceback.format_exc()[-500:]}")
             db.commit()
             emit_task_event(task_id, "status", {"type": "status", "status": "failed", "error": str(e)})
             emit_task_end(task_id)
@@ -262,18 +250,8 @@ def _run_agent_loop_background(task_id: str, description: str, class_names: List
 
 
 def _run_regular_training_background(task_id: str, dataset_id: str = None, pretrained_model: str = ""):
-    """
-    常规训练后台函数（不走 Agent 迭代，直接单次 YOLO 训练）
-    """
+    """常规训练后台函数（单次 YOLO 训练 + 流式输出每轮指标）"""
     from backend.core.database import SessionLocal
-    from backend.services.training_loop import (
-        start_agent_training_loop,
-        get_agent_training_loop,
-        pause_agent_training_loop,
-        resume_agent_training_loop,
-    )
-    import time as time_module
-
     db = SessionLocal()
     try:
         task = db.query(Task).filter(Task.task_id == task_id).first()
@@ -284,79 +262,82 @@ def _run_regular_training_background(task_id: str, dataset_id: str = None, pretr
         task.started_at = datetime.utcnow()
         db.commit()
 
-        # 获取数据集路径
+        # 数据集路径
         if dataset_id:
             dataset_path = Path(settings.data_dir) / "datasets" / dataset_id
             if not dataset_path.exists():
                 dataset_path = Path("/tmp") / dataset_id
         else:
             dataset_path = Path("/tmp/yolo_demo_dataset")
-
         data_yaml = dataset_path / "data.yaml"
         if not data_yaml.exists():
             data_yaml = "/tmp/yolo_demo_dataset/data.yaml"
 
         model_name = task.yolo_model or "yolov8n"
-        if pretrained_model and os.path.exists(pretrained_model):
-            model_path = pretrained_model
-        else:
-            model_path = f"{model_name}.pt"
+        model_path = pretrained_model if (pretrained_model and os.path.exists(pretrained_model)) else f"{model_name}.pt"
 
-        _create_task_log(db, task_id, "info", f"🔥 开始 YOLO 训练: {model_name}, {task.epochs} epochs")
+        _create_task_log(db, task_id, "info", f"🔥 开始训练: {model_name}, {task.epochs} epochs, batch={task.batch_size or 8}")
+        emit_task_event(task_id, "status", {"type": "status", "status": "training", "progress": 0})
 
-        # 直接执行 YOLO 训练（同步阻塞）
         from ultralytics import YOLO
         model = YOLO(model_path)
-
-        # 注册到 active loops（支持暂停）
         loop = start_agent_training_loop(task_id, task.description or task.name, task.training_config or {}, dataset_id)
-        # 覆盖状态
         loop.status = "training"
 
-        # 注册 epoch 回调，流式推送每轮结果
-        # ultralytics 的 on_fit_epoch_end 回调只接收 trainer 一个参数
         def on_epoch_end_callback(trainer):
-            """在每个 epoch 结束时被调用，流式推送指标"""
+            """每 epoch：写 DB（保证 getTaskLogs 能查到）+ 推 SSE（流式展示）"""
             epoch = trainer.epoch
             total = trainer.epochs
 
-            # 从 trainer 自身的属性获取 metrics
             metrics_dict = getattr(trainer, 'metrics', {}) or {}
             if not isinstance(metrics_dict, dict):
                 metrics_dict = {}
 
-            # 尝试多个可能的 key 名称（兼容不同版本的 ultralytics）
-            map50_ep = (metrics_dict.get('metrics/mAP50(B)')
-                       or metrics_dict.get('map50')
-                       or metrics_dict.get('mAP50', 0.0))
-            loss_ep = metrics_dict.get('train/box_loss', 0.0)
-            if not loss_ep:
-                loss_ep = getattr(trainer, 'loss', 0.0)
-
-            # 确保是浮点数
+            map50_ep = (metrics_dict.get('metrics/mAP50(B)') or metrics_dict.get('map50') or metrics_dict.get('mAP50', 0.0))
+            loss_ep = (metrics_dict.get('train/box_loss') or getattr(trainer, 'loss', 0.0) or 0.0)
             try:
                 map50_ep = float(map50_ep) if map50_ep else 0.0
                 loss_ep = float(loss_ep) if loss_ep else 0.0
             except (ValueError, TypeError):
                 map50_ep = loss_ep = 0.0
 
-            log_msg = f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Epoch {epoch+1}/{total}: loss={loss_ep:.4f}, mAP50={map50_ep:.4f}"
-            # 直接发送 SSE 事件（线程安全）
+            progress_pct = int((epoch + 1) / total * 100)
+            ts = datetime.now().isoformat()
+            log_msg = f"[{datetime.now().strftime('%H:%M:%S')}] Epoch {epoch+1}/{total}: loss={loss_ep:.4f}, mAP50={map50_ep:.4f}"
+
+            # 写 DB（保证 getTaskLogs 能查到完整日志）
+            db2 = SessionLocal()
+            try:
+                metric = TaskMetric(
+                    task_id=task_id, epoch=epoch + 1, iteration=epoch + 1,
+                    map50=map50_ep, map50_95=0.0,
+                    train_loss=loss_ep, val_loss=0.0,
+                )
+                db2.add(metric)
+                db2.commit()
+
+                log = TaskLog(task_id=task_id, level="info", message=log_msg, timestamp=datetime.now())
+                db2.add(log)
+                db2.commit()
+            finally:
+                db2.close()
+
+            # 推 SSE（流式输出）
             emit_task_event(task_id, "log", {
-                "type": "log",
-                "message": log_msg,
-                "timestamp": datetime.now().isoformat(),
-                "level": "info",
+                "type": "log", "message": log_msg,
+                "timestamp": ts, "level": "info",
             })
-            # 推送进度
             emit_task_event(task_id, "metrics", {
                 "type": "metrics",
-                "epoch": epoch + 1,
-                "total_epochs": total,
-                "map50": map50_ep,
-                "loss": loss_ep,
-                "progress": int((epoch + 1) / total * 100),
+                "epoch": epoch + 1, "total_epochs": total,
+                "map50": map50_ep, "loss": loss_ep,
+                "progress": progress_pct,
             })
+            emit_task_event(task_id, "status", {
+                "type": "status", "status": "training", "progress": progress_pct,
+                "map50": map50_ep,
+            })
+
         model.callbacks['on_fit_epoch_end'].append(on_epoch_end_callback)
 
         results = model.train(
@@ -374,7 +355,7 @@ def _run_regular_training_background(task_id: str, dataset_id: str = None, pretr
             patience=20,
         )
 
-        # 解析结果
+        # 解析最终结果
         if hasattr(results, 'results_dict'):
             rd = results.results_dict
             map50 = round(rd.get('metrics/mAP50(B)', 0), 4)
@@ -399,43 +380,31 @@ def _run_regular_training_background(task_id: str, dataset_id: str = None, pretr
             task.precision = precision_val
             task.recall = recall_val
             task.completed_at = datetime.utcnow()
-            # 找到输出模型路径（优先 best.pt，其次 last.pt）
+
             best_model = settings.models_dir / task_id / "weights" / "best.pt"
             last_model = settings.models_dir / task_id / "weights" / "last.pt"
-
             if best_model.exists():
                 task.output_model_path = str(best_model)
             elif last_model.exists():
                 task.output_model_path = str(last_model)
 
-            # 获取真实文件大小
-            model_file_size = "unknown"
             if task.output_model_path and os.path.exists(task.output_model_path):
                 size_bytes = os.path.getsize(task.output_model_path)
-                if size_bytes > 1024 * 1024 * 1024:
-                    model_file_size = f"{size_bytes / (1024*1024*1024):.1f} GB"
-                elif size_bytes > 1024 * 1024:
-                    model_file_size = f"{size_bytes / (1024*1024):.1f} MB"
-                else:
-                    model_file_size = f"{size_bytes / 1024:.1f} KB"
+                model_file_size = f"{size_bytes / (1024*1024):.1f} MB" if size_bytes > 1024*1024 else f"{size_bytes / 1024:.1f} KB"
+            else:
+                model_file_size = "unknown"
 
             db.commit()
-
             _create_task_log(db, task_id, "info", f"🎉 训练完成！mAP50={map50:.4f}")
-            emit_task_event(task_id, "status", {"type": "status", "status": "completed", "progress": 100})
+            emit_task_event(task_id, "status", {"type": "status", "status": "completed", "progress": 100, "map50": map50})
             emit_task_end(task_id)
 
-            # 自动创建模型记录
             if task.output_model_path:
-                from backend.core.database import GeneratedModel
                 model_record = GeneratedModel(
-                    task_id=task_id,
-                    name=task.name,
+                    task_id=task_id, name=task.name,
                     model_path=task.output_model_path,
-                    model_type="yolov8",
-                    file_size=model_file_size,
-                    map50=map50,
-                    map50_95=map50_95,
+                    model_type="yolov8", file_size=model_file_size,
+                    map50=map50, map50_95=map50_95,
                 )
                 db.add(model_record)
                 db.commit()
@@ -461,21 +430,10 @@ def _run_regular_training_background(task_id: str, dataset_id: str = None, pretr
 
 @router.post("/")
 def create_task(request: dict, db: Session = Depends(get_db)):
-    """
-    创建新训练任务
-
-    {
-        "name": "安全帽检测",
-        "description": "检测未佩戴安全帽的人员",
-        "data_path": "/data/helmet",
-        "class_names": ["person", "helmet", "no_helmet"]
-    }
-    """
+    """创建新训练任务"""
     task_id = f"task_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-
     class_names = request.get("class_names", ["object"])
     if len(class_names) == 1 and class_names[0] == "object":
-        # 尝试从描述中提取类别
         desc = request.get("description", "")
         if "安全帽" in desc or " helmet" in desc.lower():
             class_names = ["person", "helmet", "no_helmet"]
@@ -486,20 +444,14 @@ def create_task(request: dict, db: Session = Depends(get_db)):
         else:
             class_names = ["object"]
 
-    # 获取数据集路径
     dataset_id = request.get("dataset_id", "")
-    if dataset_id:
-        data_path = str(settings.data_dir / "datasets" / dataset_id)
-    else:
-        data_path = request.get("data_path", "")
-
-    # 增量训练：获取预训练模型路径
+    data_path = str(settings.data_dir / "datasets" / dataset_id) if dataset_id else request.get("data_path", "")
     pretrained_model = request.get("pretrained_model", "")
     training_type = request.get("training_type", "agent")
 
     task = Task(
         task_id=task_id,
-        name=request.get("name", request.get("description", "新任务")[:50]),
+        name=request.get("name", (request.get("description", "") or "新任务")[:50]),
         description=request.get("description", ""),
         data_path=data_path,
         status="pending",
@@ -522,43 +474,28 @@ def create_task(request: dict, db: Session = Depends(get_db)):
 
     _create_task_log(db, task_id, "info", f"✅ 任务已创建：{task.name}")
     _create_task_log(db, task_id, "info", f"📋 检测类别：{', '.join(class_names)}")
-    if pretrained_model:
-        _create_task_log(db, task_id, "info", f"📦 增量训练：基于 {pretrained_model} 继续")
 
     return {
-        "success": True,
-        "task_id": task_id,
-        "status": "pending",
-        "progress": 0,
-        "message": f"任务已创建，类别: {', '.join(class_names)}",
-        "class_names": class_names,
+        "success": True, "task_id": task_id, "status": "pending", "progress": 0,
+        "message": f"任务已创建，类别: {', '.join(class_names)}", "class_names": class_names,
     }
 
 
 @router.get("/")
 def list_tasks(skip: int = 0, limit: int = 50, db: Session = Depends(get_db)):
-    """获取任务列表"""
     tasks = db.query(Task).order_by(Task.created_at.desc()).offset(skip).limit(limit).all()
-    return {
-        "tasks": [t.to_dict() for t in tasks],
-        "total": db.query(Task).count(),
-    }
+    return {"tasks": [t.to_dict() for t in tasks], "total": db.query(Task).count()}
 
 
 @router.get("/{task_id}")
 def get_task(task_id: str, db: Session = Depends(get_db)):
-    """获取任务详情"""
     task = db.query(Task).filter(Task.task_id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-
     result = task.to_dict()
-
-    # 添加 actual_config（从 TaskIteration 表获取实际训练时使用的配置）
     last_iter = db.query(TaskIteration).filter(
         TaskIteration.task_id == task_id
     ).order_by(TaskIteration.iteration.desc()).first()
-
     if last_iter:
         result["actual_config"] = {
             "yolo_model": last_iter.yolo_model,
@@ -568,13 +505,11 @@ def get_task(task_id: str, db: Session = Depends(get_db)):
         }
     else:
         result["actual_config"] = None
-
     return result
 
 
 @router.get("/{task_id}/iterations")
 def get_task_iterations(task_id: str, db: Session = Depends(get_db)):
-    """获取任务的迭代历史"""
     loop = get_agent_training_loop(task_id)
     if loop:
         return {
@@ -585,12 +520,10 @@ def get_task_iterations(task_id: str, db: Session = Depends(get_db)):
             "iterations": [it.to_dict() for it in loop.iterations],
         }
 
-    # 如果训练已完成，从数据库恢复
     task = db.query(Task).filter(Task.task_id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
 
-    # 优先从 TaskIteration 表查询真实的迭代配置
     iterations_db = db.query(TaskIteration).filter(
         TaskIteration.task_id == task_id
     ).order_by(TaskIteration.iteration).all()
@@ -604,54 +537,26 @@ def get_task_iterations(task_id: str, db: Session = Depends(get_db)):
             "epochs": it.epochs,
             "batch_size": it.batch_size,
             "status": "completed",
-            "metrics": {
-                "map50": it.map50,
-                "map50_95": it.map50_95,
-                "precision": it.precision,
-                "recall": it.recall,
-            },
+            "metrics": {"map50": it.map50, "map50_95": it.map50_95, "precision": it.precision, "recall": it.recall},
             "decision": it.decision,
         } for it in iterations_db]
         return {
-            "task_id": task_id,
-            "current_iteration": len(iterations_db),
+            "task_id": task_id, "current_iteration": len(iterations_db),
             "status": task.status,
-            "best_metrics": {
-                "map50": task.map50,
-                "map50_95": task.map50_95,
-                "precision": task.precision,
-                "recall": task.recall,
-            },
+            "best_metrics": {"map50": task.map50, "map50_95": task.map50_95, "precision": task.precision, "recall": task.recall},
             "iterations": iterations,
         }
 
-    # 回退：如果 TaskIteration 表没有数据，使用旧逻辑（兼容性）
     metrics = db.query(TaskMetric).filter(TaskMetric.task_id == task_id).order_by(TaskMetric.epoch).all()
-
     return {
-        "task_id": task_id,
-        "current_iteration": 1,
-        "status": task.status,
-        "best_metrics": {
-            "map50": task.map50,
-            "map50_95": task.map50_95,
-            "precision": task.precision,
-            "recall": task.recall,
-        },
+        "task_id": task_id, "current_iteration": 1, "status": task.status,
+        "best_metrics": {"map50": task.map50, "map50_95": task.map50_95, "precision": task.precision, "recall": task.recall},
         "iterations": [{
-            "iteration_id": f"{task_id}_iter_1",
-            "iteration": 1,
+            "iteration_id": f"{task_id}_iter_1", "iteration": 1,
             "config": task.training_config or {},
-            "yolo_model": task.yolo_model,
-            "epochs": task.epochs,
-            "batch_size": task.batch_size,
+            "yolo_model": task.yolo_model, "epochs": task.epochs, "batch_size": task.batch_size,
             "status": task.status,
-            "metrics": {
-                "map50": task.map50,
-                "map50_95": task.map50_95,
-                "precision": task.precision,
-                "recall": task.recall,
-            },
+            "metrics": {"map50": task.map50, "map50_95": task.map50_95, "precision": task.precision, "recall": task.recall},
             "decision": "pass" if task.status == "completed" else ("running" if task.status == "training" else "stopped"),
         }],
     }
@@ -663,77 +568,41 @@ def start_task(task_id: str, background_tasks: BackgroundTasks, db: Session = De
     task = db.query(Task).filter(Task.task_id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-
     if task.status in ["training", "paused"]:
         return {"success": False, "message": "训练正在进行中"}
-
-    # 检查是否有其他训练线程仍在运行
     from backend.services.training_loop import get_agent_training_loop
     if get_agent_training_loop(task_id):
         return {"success": False, "message": "训练正在进行中，请先停止"}
 
-    # 获取类别
     class_names = task.training_config.get("class_names", ["object"]) if task.training_config else ["object"]
-
-    # 获取数据集 ID
-    dataset_id = None
-    if task.data_path:
-        dataset_id = Path(task.data_path).name
+    dataset_id = Path(task.data_path).name if task.data_path else None
+    pretrained_model = task.training_config.get("pretrained_model", "") if task.training_config else ""
 
     task.status = "training"
     task.started_at = datetime.utcnow()
     db.commit()
 
-    pretrained_model = task.training_config.get("pretrained_model", "") if task.training_config else ""
-
-    # 根据训练类型分支
     if task.training_type == "agent":
         _create_task_log(db, task_id, "info", "🚀 开始 Agent 智能训练流程...")
         _create_task_log(db, task_id, "info", f"📦 模型: {task.yolo_model}, 轮数: {task.epochs}, 批次: {task.batch_size}")
-        background_tasks.add_task(
-            _run_agent_loop_background,
-            task_id,
-            task.description or task.name,
-            class_names,
-            dataset_id,
-            pretrained_model
-        )
-        return {
-            "success": True,
-            "message": "Agent 训练流程已启动，正在进行迭代优化...",
-            "task_id": task_id,
-            "training_type": "agent",
-        }
+        background_tasks.add_task(_run_agent_loop_background, task_id, task.description or task.name, class_names, dataset_id, pretrained_model)
+        return {"success": True, "message": "Agent 训练流程已启动，正在进行迭代优化...", "task_id": task_id, "training_type": "agent"}
     else:
         _create_task_log(db, task_id, "info", "🚀 开始常规训练...")
         _create_task_log(db, task_id, "info", f"📦 模型: {task.yolo_model}, 轮数: {task.epochs}, 批次: {task.batch_size}")
-        background_tasks.add_task(
-            _run_regular_training_background,
-            task_id,
-            dataset_id,
-            pretrained_model
-        )
-        return {
-            "success": True,
-            "message": "常规训练已启动...",
-            "task_id": task_id,
-            "training_type": "regular",
-        }
+        background_tasks.add_task(_run_regular_training_background, task_id, dataset_id, pretrained_model)
+        return {"success": True, "message": "常规训练已启动...", "task_id": task_id, "training_type": "regular"}
 
 
 @router.post("/{task_id}/stop")
 def stop_task(task_id: str, db: Session = Depends(get_db)):
-    """停止训练"""
     from backend.services.training_loop import stop_agent_training_loop
-
     task = db.query(Task).filter(Task.task_id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-
     stop_agent_training_loop(task_id)
     task.status = "stopped"
     db.commit()
-
     _create_task_log(db, task_id, "warning", "⚠️ 训练已手动停止")
     emit_task_event(task_id, "status", {"type": "status", "status": "stopped"})
     emit_task_end(task_id)
@@ -742,13 +611,10 @@ def stop_task(task_id: str, db: Session = Depends(get_db)):
 
 @router.post("/{task_id}/pause")
 def pause_task(task_id: str, db: Session = Depends(get_db)):
-    """暂停训练"""
     from backend.services.training_loop import pause_agent_training_loop
-
     task = db.query(Task).filter(Task.task_id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-
     ok = pause_agent_training_loop(task_id)
     if ok:
         task.status = "paused"
@@ -761,13 +627,10 @@ def pause_task(task_id: str, db: Session = Depends(get_db)):
 
 @router.post("/{task_id}/resume")
 def resume_task(task_id: str, db: Session = Depends(get_db)):
-    """恢复训练"""
     from backend.services.training_loop import resume_agent_training_loop
-
     task = db.query(Task).filter(Task.task_id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-
     ok = resume_agent_training_loop(task_id)
     if ok:
         task.status = "training"
@@ -780,16 +643,7 @@ def resume_task(task_id: str, db: Session = Depends(get_db)):
 
 @router.post("/{task_id}/decision")
 def submit_task_decision(task_id: str, body: dict = Body(...)):
-    """
-    提交用户在 Agent 训练决策点的选择。
-
-    decision 可选值:
-    - "proceed": 直接开始训练
-    - "auto_label": 先补充自动标注
-    - "stop": 停止训练
-    """
     from backend.services.training_loop import submit_user_decision
-
     decision = body.get("decision", "stop")
     ok = submit_user_decision(task_id, decision)
     if not ok:
@@ -799,7 +653,6 @@ def submit_task_decision(task_id: str, body: dict = Body(...)):
 
 @router.get("/{task_id}/decision")
 def get_task_decision(task_id: str):
-    """查询当前是否在等待用户决策"""
     from backend.services.training_loop import get_pending_decision
     info = get_pending_decision(task_id)
     if info is None:
@@ -809,15 +662,11 @@ def get_task_decision(task_id: str):
 
 @router.get("/{task_id}/logs")
 def get_task_logs(task_id: str, lines: int = 200, db: Session = Depends(get_db)):
-    """获取训练日志"""
+    """获取训练日志（从 DB 读取，保证完整性）"""
     logs = db.query(TaskLog).filter(
         TaskLog.task_id == task_id
     ).order_by(TaskLog.timestamp.asc()).limit(lines).all()
-
-    return {
-        "task_id": task_id,
-        "logs": [log.to_dict() for log in logs],
-    }
+    return {"task_id": task_id, "logs": [log.to_dict() for log in logs]}
 
 
 @router.get("/{task_id}/metrics")
@@ -826,11 +675,7 @@ def get_task_metrics(task_id: str, db: Session = Depends(get_db)):
     metrics = db.query(TaskMetric).filter(
         TaskMetric.task_id == task_id
     ).order_by(TaskMetric.epoch.asc()).all()
-
-    return {
-        "task_id": task_id,
-        "metrics": [m.to_dict() for m in metrics],
-    }
+    return {"task_id": task_id, "metrics": [m.to_dict() for m in metrics]}
 
 
 @router.delete("/{task_id}")
@@ -839,11 +684,8 @@ def delete_task(task_id: str, db: Session = Depends(get_db)):
     task = db.query(Task).filter(Task.task_id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-
-    # 删除关联的日志和指标
     db.query(TaskLog).filter(TaskLog.task_id == task_id).delete()
     db.query(TaskMetric).filter(TaskMetric.task_id == task_id).delete()
     db.delete(task)
     db.commit()
-
     return {"success": True, "message": "任务已删除"}

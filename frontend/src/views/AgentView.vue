@@ -187,13 +187,13 @@
             <div class="metric-item">
               <span class="metric-label">mAP@50</span>
               <span class="metric-value" :class="mapClass(currentMetrics.map50)">
-                {{ currentMetrics.map50 ? (currentMetrics.map50 * 100).toFixed(2) + '%' : '-' }}
+                {{ currentMetrics.map50 !== null && currentMetrics.map50 !== undefined ? (currentMetrics.map50 * 100).toFixed(2) + '%' : '-' }}
               </span>
             </div>
             <div class="metric-item">
               <span class="metric-label">mAP</span>
               <span class="metric-value">
-                {{ currentMetrics.map50_95 ? (currentMetrics.map50_95 * 100).toFixed(2) + '%' : '-' }}
+                {{ currentMetrics.map50_95 !== null && currentMetrics.map50_95 !== undefined ? (currentMetrics.map50_95 * 100).toFixed(2) + '%' : '-' }}
               </span>
             </div>
             <div class="metric-item">
@@ -223,7 +223,7 @@
                 </span>
               </div>
               <div class="iter-stats">
-                <span>mAP50: {{ iter.metrics?.map50 ? (iter.metrics.map50 * 100).toFixed(1) + '%' : '-' }}</span>
+                <span>mAP50: {{ iter.metrics?.map50 !== null && iter.metrics?.map50 !== undefined ? (iter.metrics.map50 * 100).toFixed(1) + '%' : '-' }}</span>
                 <span>模型: {{ iter.yolo_model || '-' }}</span>
                 <span>Epochs: {{ iter.epochs || '-' }}</span>
               </div>

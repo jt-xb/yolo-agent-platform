@@ -1,0 +1,7 @@
+# YOLO Dataset for task_20260326_210327_088050
+path: /private/tmp/yolo_demo_dataset
+train: images/train
+val: images/val
+
+nc: 1
+names: ['未戴安全帽']

@@ -1,0 +1,7 @@
+# YOLO Dataset for task_20260330_152925_3d9c7a
+path: /Users/jiatian/.openclaw/workspace/projects/yolo-agent-platform/data/datasets/helmet_detection_dataset
+train: images/train
+val: images/val
+
+nc: 1
+names: ['car']

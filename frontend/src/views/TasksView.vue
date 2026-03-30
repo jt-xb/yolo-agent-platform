@@ -11,29 +11,28 @@
       </el-button>
     </div>
 
-    <!-- Tasks Grid -->
+    <!-- Loading -->
     <div v-if="loading" class="loading-state">
       <div class="spinner"></div>
       <p>加载中...</p>
     </div>
 
+    <!-- Empty -->
     <div v-else-if="tasks.length === 0">
-      <EmptyState
-        icon="🎯"
-        title="暂无训练任务"
-        description="创建一个训练任务，使用数据集训练 YOLO 模型"
-      >
+      <EmptyState icon="🎯" title="暂无训练任务" description="创建一个训练任务，使用数据集训练 YOLO 模型">
         <el-button type="primary" @click="showCreateDialog = true" style="margin-top: 16px">
           创建第一个任务
         </el-button>
       </EmptyState>
     </div>
 
+    <!-- Tasks Grid -->
     <div v-else class="tasks-grid">
       <div
         v-for="task in tasks"
         :key="task.task_id"
         class="task-card"
+        :class="{ 'card-active': detailTaskId === task.task_id && showDetailDialog }"
         @click="openDetail(task)"
       >
         <div class="task-card-header">
@@ -42,12 +41,10 @@
         </div>
 
         <div class="task-meta">
-          <span class="meta-item" v-if="task.yolo_model">
-            {{ task.yolo_model }}
-          </span>
-          <span class="meta-item" v-if="task.epochs">
-            {{ task.epochs }} epochs
-          </span>
+          <span class="meta-item" v-if="task.yolo_model">{{ task.yolo_model }}</span>
+          <span class="meta-item" v-if="task.epochs">{{ task.epochs }} epochs</span>
+          <span class="meta-item" v-if="task.training_type === 'agent'">🤖 Agent</span>
+          <span class="meta-item" v-else>⚡ 常规</span>
         </div>
 
         <div class="task-progress" v-if="task.status === 'training'">
@@ -63,10 +60,6 @@
             <span class="metric-value" :class="mapClass(task.map50)">
               {{ (task.map50 * 100).toFixed(1) }}%
             </span>
-          </div>
-          <div class="metric-item" v-if="task.map50_95">
-            <span class="metric-label">mAP</span>
-            <span class="metric-value">{{ (task.map50_95 * 100).toFixed(1) }}%</span>
           </div>
         </div>
 
@@ -124,60 +117,44 @@
     </div>
 
     <!-- Create Task Dialog -->
-    <el-dialog
-      v-model="showCreateDialog"
-      title="新建训练任务"
-      width="480px"
-      destroy-on-close
-    >
+    <el-dialog v-model="showCreateDialog" title="新建训练任务" width="520px" destroy-on-close>
       <el-form label-position="top" :model="createForm">
         <el-form-item label="任务名称">
-          <el-input
-            v-model="createForm.name"
-            placeholder="例如：安全帽检测"
-          />
+          <el-input v-model="createForm.name" placeholder="例如：安全帽检测" />
+        </el-form-item>
+        <el-form-item label="训练类型">
+          <el-radio-group v-model="createForm.trainingType" size="small">
+            <el-radio-button value="regular">⚡ 常规训练</el-radio-button>
+            <el-radio-button value="agent">🤖 Agent 智能迭代</el-radio-button>
+          </el-radio-group>
+          <div class="form-tip">
+            {{ createForm.trainingType === 'regular'
+              ? '选定数据集和模型，一次性训练完成，适合快速验证'
+              : '自动评估效果，迭代优化参数，直到达到阈值，适合追求精度' }}
+          </div>
         </el-form-item>
         <el-form-item label="数据集">
           <el-select v-model="createForm.datasetId" style="width: 100%">
-            <el-option
-              v-for="ds in datasets"
-              :key="ds.id"
-              :label="ds.name"
-              :value="ds.id"
-            />
+            <el-option v-for="ds in datasets" :key="ds.id" :label="ds.name" :value="ds.id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="任务描述">
-          <el-input
-            v-model="createForm.description"
-            type="textarea"
-            :rows="3"
-            placeholder="描述要检测的目标，例如：检测照片中的人物是否佩戴安全帽"
-          />
-        </el-form-item>
-        <el-form-item label="检测类别（逗号分隔）">
-          <el-input
-            v-model="createForm.classes"
-            placeholder="未戴安全帽, 未戴手套, 火灾"
-          />
-        </el-form-item>
-        <el-form-item label="模型大小">
-          <el-select v-model="createForm.yolo_model" style="width: 100%">
-            <el-option label="YOLOv8n (最小)" value="yolov8n" />
+        <el-form-item label="YOLO 模型">
+          <el-select v-model="createForm.yoloModel" style="width: 100%">
+            <el-option label="YOLOv8n (最小，最快)" value="yolov8n" />
             <el-option label="YOLOv8s (小)" value="yolov8s" />
             <el-option label="YOLOv8m (中)" value="yolov8m" />
             <el-option label="YOLOv8l (大)" value="yolov8l" />
-            <el-option label="YOLOv8x (最大)" value="yolov8x" />
+            <el-option label="YOLOv8x (最大，最准)" value="yolov8x" />
           </el-select>
         </el-form-item>
         <el-form-item label="训练轮数">
-          <el-input-number
-            v-model="createForm.epochs"
-            :min="10"
-            :max="1000"
-            :step="10"
-            style="width: 100%"
-          />
+          <el-input-number v-model="createForm.epochs" :min="10" :max="1000" :step="10" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="检测类别（逗号分隔）">
+          <el-input v-model="createForm.classes" placeholder="person, helmet, no_helmet" />
+        </el-form-item>
+        <el-form-item label="任务描述（可选）">
+          <el-input v-model="createForm.description" type="textarea" :rows="2" placeholder="描述要检测的目标" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -191,25 +168,24 @@
     <!-- Task Detail Dialog -->
     <el-dialog
       v-model="showDetailDialog"
-      :title="selectedTask?.name"
-      width="800px"
+      :title="selectedTask?.name || '任务详情'"
+      width="860px"
       destroy-on-close
+      @closed="onDetailClosed"
     >
       <div class="detail-content" v-if="selectedTask">
-        <!-- Status -->
+        <!-- 状态区 -->
         <div class="detail-section">
           <div class="detail-row">
             <span class="detail-label">状态</span>
             <StatusBadge :status="selectedTask.status" />
+            <span class="meta-item" style="margin-left:8px" v-if="selectedTask.training_type === 'agent'">🤖 Agent</span>
+            <span class="meta-item" style="margin-left:8px" v-else>⚡ 常规</span>
           </div>
-          <div class="detail-row" v-if="selectedTask.progress">
+          <div class="detail-row" v-if="selectedTask.progress > 0">
             <span class="detail-label">进度</span>
             <div class="progress-inline">
-              <el-progress
-                :percentage="selectedTask.progress"
-                :stroke-width="8"
-                style="width: 200px"
-              />
+              <el-progress :percentage="Math.round(selectedTask.progress)" :stroke-width="8" style="width:220px" />
             </div>
           </div>
           <div class="detail-row" v-if="selectedTask.error_message">
@@ -218,37 +194,37 @@
           </div>
         </div>
 
-        <!-- Metrics -->
-        <div class="detail-section" v-if="metrics.length">
-          <h4 class="section-subtitle">训练指标</h4>
+        <!-- 实时指标卡（流式） -->
+        <div class="detail-section" v-if="liveMetrics.length">
+          <h4 class="section-subtitle">📊 实时指标</h4>
           <div class="metrics-grid">
-            <div class="metric-card" v-for="m in metrics" :key="m.epoch">
-              <div class="mc-epoch">Epoch {{ m.epoch }}</div>
+            <div class="metric-card" v-for="m in liveMetrics.slice(-12)" :key="m.epoch">
+              <div class="mc-epoch">Epoch {{ m.epoch }}/{{ m.total || selectedTask.epochs }}</div>
               <div class="mc-val">
-                <span class="mc-label">mAP@50</span>
+                <span class="mc-label">mAP50</span>
                 <span class="mc-value" :class="mapClass(m.map50)">
-                  {{ m.map50 ? (m.map50 * 100).toFixed(1) + '%' : '-' }}
+                  {{ m.map50 != null ? (m.map50 * 100).toFixed(1) + '%' : '-' }}
                 </span>
               </div>
               <div class="mc-val">
                 <span class="mc-label">Loss</span>
-                <span class="mc-value">{{ m.train_loss ? m.train_loss.toFixed(3) : '-' }}</span>
+                <span class="mc-value">{{ m.loss != null ? m.loss.toFixed(3) : '-' }}</span>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- Iterations -->
+        <!-- 迭代历史 -->
         <div class="detail-section" v-if="iterations.length">
           <h4 class="section-subtitle">迭代历史</h4>
-          <el-table :data="iterations" size="small">
-            <el-table-column prop="iteration" label="迭代" width="70" />
+          <el-table :data="iterations" size="small" max-height="200">
+            <el-table-column prop="iteration" label="迭代" width="60" />
             <el-table-column prop="yolo_model" label="模型" />
-            <el-table-column prop="epochs" label="Epochs" />
+            <el-table-column prop="epochs" label="Epochs" width="70" />
             <el-table-column label="mAP@50" width="90">
               <template #default="{ row }">
-                <span :class="mapClass(row.map50)">
-                  {{ row.map50 ? (row.map50 * 100).toFixed(1) + '%' : '-' }}
+                <span :class="mapClass(row.metrics?.map50)">
+                  {{ row.metrics?.map50 != null ? (row.metrics.map50 * 100).toFixed(1) + '%' : '-' }}
                 </span>
               </template>
             </el-table-column>
@@ -257,37 +233,42 @@
                 <span v-if="row.decision === 'pass'">✅ 达标</span>
                 <span v-else-if="row.decision === 'fail_retry'">🔄 调整重试</span>
                 <span v-else-if="row.decision === 'fail_stop'">❌ 失败停止</span>
-                <span v-else-if="row.decision === 'max_iteration'">⏹️ 达到上限</span>
+                <span v-else-if="row.decision === 'max_iteration'">⏹️ 达上限</span>
                 <span v-else-if="row.decision === 'user_decision'">👤 用户决策</span>
-                <span v-else>{{ row.decision }}</span>
+                <span v-else>{{ row.decision || '-' }}</span>
               </template>
             </el-table-column>
           </el-table>
         </div>
 
-        <!-- Logs -->
-        <div class="detail-section" v-if="logs.length">
-          <h4 class="section-subtitle">训练日志</h4>
-          <div class="log-container">
+        <!-- 训练日志（流式） -->
+        <div class="detail-section">
+          <h4 class="section-subtitle">
+            📋 训练日志
+            <span class="log-count" v-if="logs.length">({{ logs.length }} 条)</span>
+          </h4>
+          <div class="log-container" ref="logContainerRef">
             <div
-              v-for="(log, i) in logs.slice(-50)"
+              v-for="(log, i) in logs.slice(-80)"
               :key="i"
               class="log-line"
-              :class="`log-${log.level}`"
+              :class="`log-${log.level || 'info'}`"
             >
               <span class="log-time">{{ formatTime(log.timestamp) }}</span>
               {{ log.message }}
             </div>
+            <div v-if="!logs.length" class="log-empty">暂无日志，开始训练后将实时显示...</div>
           </div>
         </div>
       </div>
       <template #footer>
-        <div class="detail-footer">
+        <div class="detail-footer" v-if="selectedTask">
           <div class="footer-left">
-            <el-tag type="warning">⚡ 常规训练</el-tag>
+            <el-tag type="info" v-if="selectedTask.yolo_model">{{ selectedTask.yolo_model }}</el-tag>
+            <el-tag type="info" v-if="selectedTask.epochs">{{ selectedTask.epochs }} epochs</el-tag>
           </div>
           <el-button
-            v-if="selectedTask?.status !== 'training' && selectedTask?.status !== 'paused'"
+            v-if="selectedTask.status !== 'training' && selectedTask.status !== 'paused'"
             type="danger"
             text
             size="small"
@@ -302,11 +283,15 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import StatusBadge from '../components/common/StatusBadge.vue'
 import EmptyState from '../components/common/EmptyState.vue'
-import { getTasks, createTask as apiCreateTask, startTask, stopTask, deleteTask as apiDeleteTask, pauseTask as apiPauseTask, resumeTask as apiResumeTask, getTaskLogs, getTaskMetrics, getTaskIterations, createTaskStream } from '../api/tasks'
+import {
+  getTasks, createTask as apiCreateTask, startTask, stopTask,
+  deleteTask as apiDeleteTask, pauseTask as apiPauseTask, resumeTask as apiResumeTask,
+  getTaskLogs, getTaskMetrics, getTaskIterations, createTaskStream
+} from '../api/tasks'
 import { getDatasets } from '../api/datasets'
 
 const tasks = ref([])
@@ -315,21 +300,28 @@ const loading = ref(true)
 const showCreateDialog = ref(false)
 const showDetailDialog = ref(false)
 const selectedTask = ref(null)
+const detailTaskId = ref(null)
 const creating = ref(false)
-const metrics = ref([])
+const liveMetrics = ref([])
 const iterations = ref([])
 const logs = ref([])
-let stream = null
+const logContainerRef = ref(null)
+
+// SSE stream 实例（每次打开独立，关闭时清理）
+let currentStream = null
+let logPollingTimer = null
 
 const createForm = ref({
   name: '',
   description: '',
   classes: '',
   datasetId: 'demo',
-  yolo_model: 'yolov8n',
+  yoloModel: 'yolov8n',
   epochs: 100,
+  trainingType: 'regular',
 })
 
+// ============================================
 async function loadDatasets() {
   try {
     const data = await getDatasets()
@@ -337,7 +329,7 @@ async function loadDatasets() {
     if (datasets.value.length && !createForm.value.datasetId) {
       createForm.value.datasetId = datasets.value[0].id
     }
-  } catch (e) {
+  } catch {
     datasets.value = [{ id: 'demo', name: '演示数据集' }]
   }
 }
@@ -370,13 +362,13 @@ async function createTask() {
       description: createForm.value.description,
       class_names: classList,
       dataset_id: createForm.value.datasetId,
-      yolo_model: createForm.value.yolo_model,
+      yolo_model: createForm.value.yoloModel,
       epochs: createForm.value.epochs,
-      training_type: 'regular',
+      training_type: createForm.value.trainingType,
     })
     ElMessage.success('任务创建成功')
     showCreateDialog.value = false
-    createForm.value = { name: '', description: '', classes: '', datasetId: createForm.value.datasetId || 'demo', yolo_model: 'yolov8n', epochs: 100 }
+    createForm.value = { name: '', description: '', classes: '', datasetId: createForm.value.datasetId || 'demo', yoloModel: 'yolov8n', epochs: 100, trainingType: 'regular' }
     await loadTasks()
   } catch (e) {
     ElMessage.error('创建失败: ' + e.message)
@@ -390,7 +382,6 @@ async function startTraining(task) {
     await startTask(task.task_id)
     ElMessage.success('训练已启动')
     await loadTasks()
-    // Auto open detail to see streaming
     openDetail(task)
   } catch (e) {
     ElMessage.error('启动失败: ' + e.message)
@@ -432,56 +423,145 @@ async function deleteTask(task) {
     await ElMessageBox.confirm(`确定要删除任务"${task.name}"吗？`, '删除确认', { type: 'warning' })
     await apiDeleteTask(task.task_id)
     ElMessage.success('删除成功')
+    if (detailTaskId.value === task.task_id) {
+      closeDetail()
+    }
     await loadTasks()
   } catch (e) {
-    if (e !== 'cancel') {
-      ElMessage.error('删除失败: ' + e.message)
-    }
+    if (e !== 'cancel') ElMessage.error('删除失败: ' + e.message)
   }
 }
 
-async function openDetail(task) {
-  selectedTask.value = task
-  showDetailDialog.value = true
-  metrics.value = []
+// ============================================
+// 详情页：SSE 流式日志 + 轮询补全
+// ============================================
+
+function closeDetail() {
+  // 清理 SSE
+  if (currentStream) {
+    currentStream.close()
+    currentStream = null
+  }
+  // 清理轮询
+  if (logPollingTimer) {
+    clearInterval(logPollingTimer)
+    logPollingTimer = null
+  }
+  showDetailDialog.value = false
+  selectedTask.value = null
+  detailTaskId.value = null
+  liveMetrics.value = []
   iterations.value = []
   logs.value = []
+}
 
-  // Load data
+function onDetailClosed() {
+  closeDetail()
+}
+
+async function openDetail(task) {
+  // 关闭旧的
+  closeDetail()
+
+  // 重置状态
+  selectedTask.value = task
+  detailTaskId.value = task.task_id
+  liveMetrics.value = []
+  iterations.value = []
+  logs.value = []
+  showDetailDialog.value = true
+
+  // 加载历史数据（从 DB）
   try {
     const [mData, iData, lData] = await Promise.all([
       getTaskMetrics(task.task_id).catch(() => ({ metrics: [] })),
       getTaskIterations(task.task_id).catch(() => ({ iterations: [] })),
-      getTaskLogs(task.task_id, 50).catch(() => ({ logs: [] })),
+      getTaskLogs(task.task_id, 100).catch(() => ({ logs: [] })),
     ])
-    metrics.value = mData.metrics || []
+    liveMetrics.value = mData.metrics || []
     iterations.value = iData.iterations || []
     logs.value = lData.logs || []
+    scrollLogToBottom()
   } catch {}
 
-  // Start SSE stream
-  if (stream) stream.close()
-  stream = createTaskStream(task.task_id, {
+  // 启动 SSE 流（实时接收新数据）
+  startSSEStream(task.task_id)
+
+  // 每 3 秒轮询补全（防止 SSE 漏消息）
+  logPollingTimer = setInterval(async () => {
+    if (!showDetailDialog.value) return
+    try {
+      const lData = await getTaskLogs(task.task_id, 50).catch(() => ({ logs: [] }))
+      if (lData.logs && lData.logs.length > logs.value.length) {
+        logs.value = lData.logs.slice(-100)
+        scrollLogToBottom()
+      }
+      const mData = await getTaskMetrics(task.task_id).catch(() => ({ metrics: [] }))
+      if (mData.metrics && mData.metrics.length > liveMetrics.value.length) {
+        liveMetrics.value = mData.metrics
+      }
+    } catch {}
+  }, 3000)
+}
+
+function startSSEStream(taskId) {
+  if (currentStream) {
+    currentStream.close()
+    currentStream = null
+  }
+
+  currentStream = createTaskStream(taskId, {
     onMessage(data) {
-      if (data.type === 'status' || data.type === 'log' || data.type === 'metrics') {
-        if (selectedTask.value?.task_id === task.task_id) {
-          selectedTask.value = { ...selectedTask.value, ...data }
-          if (data.progress !== undefined) {
-            selectedTask.value.progress = data.progress
-          }
-          if (data.logs) logs.value = data.logs.slice(-50)
-          if (data.metrics) metrics.value = data.metrics
+      if (!selectedTask.value || selectedTask.value.task_id !== taskId) return
+
+      if (data.type === 'log' || data.type === 'log') {
+        logs.value.push(data)
+        if (logs.value.length > 200) logs.value = logs.value.slice(-100)
+        nextTick(scrollLogToBottom)
+      }
+
+      if (data.type === 'metrics') {
+        // 合并到 liveMetrics（去重）
+        const existIdx = liveMetrics.value.findIndex(m => m.epoch === data.epoch)
+        if (existIdx >= 0) {
+          liveMetrics.value[existIdx] = data
+        } else {
+          liveMetrics.value.push(data)
         }
-        // Update task in list
-        const idx = tasks.value.findIndex(t => t.task_id === task.task_id)
+      }
+
+      if (data.type === 'status') {
+        // 更新任务状态和进度
+        selectedTask.value = { ...selectedTask.value, status: data.status, progress: data.progress }
+        // 同步到 tasks 列表
+        const idx = tasks.value.findIndex(t => t.task_id === taskId)
         if (idx >= 0) {
-          tasks.value[idx] = { ...tasks.value[idx], ...data }
+          tasks.value[idx] = { ...tasks.value[idx], status: data.status, progress: data.progress, map50: data.map50 || tasks.value[idx].map50 }
+        }
+        // 训练结束，清理轮询
+        if (data.status === 'completed' || data.status === 'failed' || data.status === 'stopped') {
+          if (logPollingTimer) {
+            clearInterval(logPollingTimer)
+            logPollingTimer = null
+          }
         }
       }
     },
     onError() {
-      stream = null
+      // SSE 断开，轮询会补偿
+      if (currentStream) {
+        currentStream.close()
+        currentStream = null
+      }
     },
+  })
+}
+
+function scrollLogToBottom() {
+  nextTick(() => {
+    if (logContainerRef.value) {
+      logContainerRef.value.scrollTop = logContainerRef.value.scrollHeight
+    }
   })
 }
 
@@ -492,85 +572,47 @@ function mapClass(val) {
 
 function formatTime(ts) {
   if (!ts) return ''
-  // 解析 ISO naive datetime（无时区），直接显示 HH:MM:SS
-  // 不走 new Date()（会当 UTC 处理导致时差）
   if (typeof ts === 'string' && ts.length >= 8) {
-    // 格式: 2026-03-30T08:29:53 或 08:29:53
     const match = ts.match(/T(\d{2}:\d{2}:\d{2})/) || ts.match(/^(\d{2}:\d{2}:\d{2})/)
     if (match) return match[1]
   }
-  return new Date(ts).toLocaleTimeString()
+  try { return new Date(ts).toLocaleTimeString() } catch { return '' }
 }
-
-// 关闭对话框时清理 SSE 流
-watch(showDetailDialog, (val) => {
-  if (!val && stream) {
-    stream.close()
-    stream = null
-  }
-})
 
 onMounted(async () => {
   await Promise.all([loadTasks(), loadDatasets()])
 })
-onUnmounted(() => { if (stream) stream.close() })
+
+onUnmounted(() => {
+  closeDetail()
+})
 </script>
 
 <style scoped>
-.tasks-view {
-  max-width: 1200px;
-}
+.tasks-view { max-width: 1200px; }
 
 .page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: flex; align-items: center; justify-content: space-between;
   margin-bottom: var(--space-6);
 }
-
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-
-.section-title {
-  font-size: var(--text-xl);
-  font-weight: var(--font-semibold);
-  color: var(--color-text);
-}
-
+.header-left { display: flex; align-items: center; gap: var(--space-3); }
+.section-title { font-size: var(--text-xl); font-weight: var(--font-semibold); color: var(--color-text); }
 .task-count {
-  font-size: var(--text-sm);
-  color: var(--color-text-muted);
-  background: var(--color-surface-2);
-  padding: 2px 10px;
-  border-radius: var(--radius-full);
+  font-size: var(--text-sm); color: var(--color-text-muted);
+  background: var(--color-surface-2); padding: 2px 10px; border-radius: var(--radius-full);
 }
 
 /* Loading */
 .loading-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-12);
-  gap: var(--space-3);
-  color: var(--color-text-muted);
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; padding: var(--space-12); gap: var(--space-3); color: var(--color-text-muted);
 }
-
 .spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid var(--color-border);
-  border-top-color: var(--color-primary);
-  border-radius: 50%;
+  width: 32px; height: 32px; border: 3px solid var(--color-border);
+  border-top-color: var(--color-primary); border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* Tasks Grid */
 .tasks-grid {
@@ -578,281 +620,77 @@ onUnmounted(() => { if (stream) stream.close() })
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: var(--space-4);
 }
-
 .task-card {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: var(--space-4);
-  cursor: pointer;
-  transition: all var(--transition-fast);
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: var(--radius-md); padding: var(--space-4);
+  cursor: pointer; transition: all var(--transition-fast);
 }
-
-.task-card:hover {
-  box-shadow: var(--shadow-md);
-  border-color: var(--color-primary-light);
-}
-
-.task-card-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3);
-  margin-bottom: var(--space-3);
-}
-
-.task-name {
-  font-size: var(--text-md);
-  font-weight: var(--font-semibold);
-  color: var(--color-text);
-  line-height: 1.3;
-}
-
-.task-meta {
-  display: flex;
-  gap: var(--space-3);
-  margin-bottom: var(--space-3);
-}
-
+.task-card:hover { box-shadow: var(--shadow-md); border-color: var(--color-primary-light); }
+.task-card.card-active { border-color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 5%, var(--color-surface)); }
+.task-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-3); }
+.task-name { font-size: var(--text-md); font-weight: var(--font-semibold); line-height: 1.3; }
+.task-meta { display: flex; gap: var(--space-2); flex-wrap: wrap; margin-bottom: var(--space-3); }
 .meta-item {
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
-  background: var(--color-surface-2);
-  padding: 2px 8px;
-  border-radius: var(--radius-sm);
+  font-size: var(--text-xs); color: var(--color-text-muted);
+  background: var(--color-surface-2); padding: 2px 8px; border-radius: var(--radius-sm);
 }
-
-.task-progress {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-3);
-}
-
-.progress-bar {
-  flex: 1;
-  height: 6px;
-  background: var(--color-surface-2);
-  border-radius: var(--radius-full);
-  overflow: hidden;
-}
-
-.progress-fill {
-  height: 100%;
-  background: var(--color-primary);
-  border-radius: var(--radius-full);
-  transition: width 0.5s ease;
-}
-
-.progress-text {
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
-  min-width: 36px;
-}
-
+.task-progress { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-3); }
+.progress-bar { flex: 1; height: 6px; background: var(--color-surface-2); border-radius: var(--radius-full); overflow: hidden; }
+.progress-fill { height: 100%; background: var(--color-primary); border-radius: var(--radius-full); transition: width 0.5s; }
+.progress-text { font-size: var(--text-xs); color: var(--color-text-muted); min-width: 36px; }
 .task-metrics {
-  display: flex;
-  gap: var(--space-4);
-  margin-bottom: var(--space-3);
-  padding: var(--space-3);
-  background: var(--color-surface-2);
-  border-radius: var(--radius-sm);
+  display: flex; gap: var(--space-4); margin-bottom: var(--space-3);
+  padding: var(--space-3); background: var(--color-surface-2); border-radius: var(--radius-sm);
 }
-
-.metric-item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.metric-label {
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
-}
-
-.metric-value {
-  font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
-}
-
+.metric-item { display: flex; flex-direction: column; gap: 2px; }
+.metric-label { font-size: var(--text-xs); color: var(--color-text-muted); }
+.metric-value { font-size: var(--text-sm); font-weight: var(--font-semibold); }
 .metric-good { color: var(--color-secondary); }
 .metric-bad { color: var(--color-danger); }
-
 .task-actions {
-  display: flex;
-  gap: var(--space-2);
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--color-border-light);
+  display: flex; gap: var(--space-2); padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border-light); flex-wrap: wrap;
 }
 
-/* Dialog detail */
-.detail-section {
-  margin-bottom: var(--space-5);
-}
+/* Create dialog */
+.form-tip { font-size: var(--text-xs); color: var(--color-text-muted); margin-top: 6px; }
 
+/* Detail dialog */
+.detail-section { margin-bottom: var(--space-5); }
 .section-subtitle {
-  font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
-  color: var(--color-text-secondary);
-  margin-bottom: var(--space-3);
+  font-size: var(--text-sm); font-weight: var(--font-semibold);
+  color: var(--color-text-secondary); margin-bottom: var(--space-3);
+  display: flex; align-items: center; gap: var(--space-2);
 }
+.log-count { font-weight: normal; color: var(--color-text-muted); }
+.detail-row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) 0; }
+.detail-label { font-size: var(--text-sm); color: var(--color-text-muted); min-width: 60px; }
+.progress-inline { flex: 1; }
+.error-message { font-size: var(--text-sm); color: var(--color-danger); word-break: break-all; }
 
-.detail-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) 0;
-}
-
-.detail-label {
-  font-size: var(--text-sm);
-  color: var(--color-text-muted);
-  min-width: 60px;
-}
-
-.progress-inline {
-  flex: 1;
-}
-
-.error-message {
-  font-size: var(--text-sm);
-  color: var(--color-danger);
-  word-break: break-all;
-}
-
+/* Metrics grid */
 .metrics-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: var(--space-3);
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: var(--space-3);
 }
+.metric-card { background: var(--color-surface-2); border-radius: var(--radius-sm); padding: var(--space-3); }
+.mc-epoch { font-size: var(--text-xs); color: var(--color-text-muted); margin-bottom: var(--space-2); }
+.mc-val { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.mc-label { font-size: var(--text-xs); color: var(--color-text-muted); }
+.mc-value { font-size: var(--text-sm); font-weight: var(--font-semibold); }
 
-.metric-card {
-  background: var(--color-surface-2);
-  border-radius: var(--radius-sm);
-  padding: var(--space-3);
-}
-
-.mc-epoch {
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
-  margin-bottom: var(--space-2);
-}
-
-.mc-val {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 4px;
-}
-
-.mc-label {
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
-}
-
-.mc-value {
-  font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
-}
-
+/* Log container */
 .log-container {
-  background: #1e1e1e;
-  border-radius: var(--radius-sm);
-  padding: var(--space-3);
-  max-height: 200px;
-  overflow-y: auto;
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
+  background: #1e1e1e; border-radius: var(--radius-sm); padding: var(--space-3);
+  max-height: 240px; overflow-y: auto; font-family: var(--font-mono);
+  font-size: var(--text-xs); display: flex; flex-direction: column; gap: 1px;
 }
-
-.log-line {
-  color: #d4d4d4;
-  padding: 2px 0;
-}
-
-.log-time {
-  color: #6a9955;
-  margin-right: var(--space-2);
-}
-
+.log-line { color: #d4d4d4; padding: 1px 0; white-space: pre-wrap; word-break: break-all; }
+.log-time { color: #6a9955; margin-right: var(--space-2); flex-shrink: 0; }
 .log-error { color: #f48771; }
 .log-warning { color: #dcdcaa; }
+.log-empty { color: #666; text-align: center; padding: var(--space-4); }
 
-.detail-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-}
-
-.footer-left {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-/* Decision Dialog */
-.decision-content {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-
-.llm-analysis-box {
-  background: var(--color-surface-2);
-  border-radius: var(--radius-sm);
-  padding: var(--space-4);
-}
-
-.analysis-header {
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
-  color: var(--color-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-bottom: var(--space-2);
-}
-
-.analysis-text {
-  font-size: var(--text-sm);
-  color: var(--color-text);
-  line-height: 1.6;
-  white-space: pre-wrap;
-}
-
-.decision-options {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.decision-option {
-  padding: var(--space-3);
-  border: 2px solid var(--color-border-light);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.decision-option:hover {
-  border-color: var(--color-primary);
-  background: var(--color-surface-2);
-}
-
-.decision-option.option-selected {
-  border-color: var(--color-primary);
-  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
-}
-
-.option-label {
-  font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
-  color: var(--color-text);
-  margin-bottom: 4px;
-}
-
-.option-desc {
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
-}
+/* Footer */
+.detail-footer { display: flex; align-items: center; justify-content: space-between; width: 100%; }
+.footer-left { display: flex; align-items: center; gap: var(--space-2); }
 </style>
