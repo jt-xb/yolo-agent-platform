@@ -1257,21 +1257,42 @@ function deleteBbox(i) {
   drawBboxes()
 }
 
-function addClass() {
+async function addClass() {
   const name = newClassName.value.trim()
   if (name && !datasetClasses.value.includes(name)) {
     datasetClasses.value.push(name)
     selectedClassId.value = datasetClasses.value.length - 1
     availableClasses.value = [...datasetClasses.value]
     newClassName.value = ''
+    // 同步到后端
+    if (currentDatasetId.value && currentDatasetId.value !== 'demo') {
+      try {
+        await updateDatasetMeta(currentDatasetId.value, { class_names: datasetClasses.value })
+        // 更新 datasets 中的 class_names
+        const ds = datasets.value.find(d => d.id === currentDatasetId.value)
+        if (ds) ds.class_names = [...datasetClasses.value]
+      } catch (e) {
+        ElMessage.error('保存类别失败: ' + e.message)
+      }
+    }
   }
 }
 
-function removeClass(index) {
+async function removeClass(index) {
   datasetClasses.value.splice(index, 1)
   availableClasses.value = [...datasetClasses.value]
   if (selectedClassId.value >= datasetClasses.value.length) {
     selectedClassId.value = Math.max(0, datasetClasses.value.length - 1)
+  }
+  // 同步到后端
+  if (currentDatasetId.value && currentDatasetId.value !== 'demo') {
+    try {
+      await updateDatasetMeta(currentDatasetId.value, { class_names: datasetClasses.value })
+      const ds = datasets.value.find(d => d.id === currentDatasetId.value)
+      if (ds) ds.class_names = [...datasetClasses.value]
+    } catch (e) {
+      ElMessage.error('保存类别失败: ' + e.message)
+    }
   }
 }
 
