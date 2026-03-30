@@ -7,12 +7,17 @@ async function request(path, options = {}) {
       'Content-Type': 'application/json',
       ...options.headers,
     },
-    ...options,
+    method: options.method || 'GET',
   }
 
-  // Don't set Content-Type for FormData
+  // Don't set Content-Type for FormData and DELETE requests
   if (options.body instanceof FormData) {
     delete config.headers['Content-Type']
+  }
+
+  // Only add body for non-DELETE requests
+  if (options.method !== 'DELETE' && options.body) {
+    config.body = typeof options.body === 'string' ? options.body : JSON.stringify(options.body)
   }
 
   try {
