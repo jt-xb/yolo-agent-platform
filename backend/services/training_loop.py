@@ -210,38 +210,77 @@ class AgentTrainingLoop:
             model = YOLO(model_path)
 
             # 注册 epoch 回调，流式推送每轮结果
+            # 使用更可靠的 Trainer's callbacks 而非 model's callbacks
             if progress_callback:
-                def on_epoch_end_cb(trainer):
+                _self = self  # 闭包捕获
+                _iteration = iteration
+
+                def on_epoch_end_callback(trainer, metrics):
+                    """在每个 epoch 结束时被调用，流式推送指标"""
                     epoch = trainer.epoch
                     total = trainer.epochs
-                    metrics_dict = getattr(trainer, 'metrics', {})
-                    map50 = metrics_dict.get('metrics/mAP50(B)', 0.0)
-                    map50_95 = metrics_dict.get('metrics/mAP50-95(B)', 0.0)
-                    precision = metrics_dict.get('metrics/precision(B)', 0.0)
-                    recall = metrics_dict.get('metrics/recall(B)', 0.0)
-                    loss = getattr(trainer, 'loss', 0.0)
+
+                    # 从 trainer 自身的属性获取 metrics（更可靠）
+                    metrics_dict = getattr(trainer, 'metrics', {}) or {}
+                    if not isinstance(metrics_dict, dict):
+                        metrics_dict = {}
+
+                    # 尝试多个可能的 key 名称（兼容不同版本的 ultralytics）
+                    map50 = (metrics_dict.get('metrics/mAP50(B)')
+                             or metrics_dict.get('map50')
+                             or metrics_dict.get('mAP50', 0.0))
+                    map50_95 = (metrics_dict.get('metrics/mAP50-95(B)')
+                                or metrics_dict.get('map50-95', 0.0))
+                    precision = (metrics_dict.get('metrics/precision(B)')
+                                 or metrics_dict.get('precision', 0.0))
+                    recall = (metrics_dict.get('metrics/recall(B)')
+                              or metrics_dict.get('recall', 0.0))
+
+                    # 训练 loss
+                    loss = metrics_dict.get('train/box_loss', 0.0)
+                    if not loss:
+                        loss = getattr(trainer, 'loss', 0.0)
+
+                    # 确保是浮点数
+                    try:
+                        map50 = float(map50) if map50 else 0.0
+                        map50_95 = float(map50_95) if map50_95 else 0.0
+                        precision = float(precision) if precision else 0.0
+                        recall = float(recall) if recall else 0.0
+                        loss = float(loss) if loss else 0.0
+                    except (ValueError, TypeError):
+                        map50 = map50_95 = precision = recall = loss = 0.0
+
                     log_msg = f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Epoch {epoch+1}/{total}: loss={loss:.4f}, mAP50={map50:.4f}"
-                    iteration.logs.append(log_msg)
+                    _iteration.logs.append(log_msg)
+
                     # 直接发送 SSE log 事件（实时流到前端）
-                    from backend.routers.tasks import emit_task_event
-                    emit_task_event(self.task_id, "log", {
-                        "type": "log",
-                        "message": log_msg,
-                        "timestamp": datetime.now().isoformat(),
-                        "level": "info",
-                    })
-                    # 推送进度
-                    progress_callback({
-                        "metrics": {
-                            "map50": map50,
-                            "map50_95": map50_95,
-                            "precision": precision,
-                            "recall": recall,
-                            "train_loss": loss,
-                        },
-                        "logs": [],
-                    }, len(self.iterations), self.requirements.max_iterations)
-                model.callbacks['on_fit_epoch_end'].append(on_epoch_end_cb)
+                    try:
+                        from backend.routers.tasks import emit_task_event
+                        emit_task_event(_self.task_id, "log", {
+                            "type": "log",
+                            "message": log_msg,
+                            "timestamp": datetime.now().isoformat(),
+                            "level": "info",
+                        })
+                        # 推送进度
+                        progress_callback({
+                            "metrics": {
+                                "map50": map50,
+                                "map50_95": map50_95,
+                                "precision": precision,
+                                "recall": recall,
+                                "train_loss": loss,
+                            },
+                            "logs": [],
+                        }, len(_self.iterations), _self.requirements.max_iterations)
+                    except Exception as e:
+                        iteration.logs.append(f"回调错误: {str(e)}")
+
+                # 注册到 Trainer 的 callbacks（在 model.train() 调用前注册）
+                # ultralytics 会在内部创建 Trainer 并使用这些 callbacks
+                from ultralytics.utils.callbacks import callbacks as cb_registry
+                model.callbacks['on_fit_epoch_end'].append(on_epoch_end_callback)
 
             # Pause check before training
             if self._pause_event.is_set():
@@ -754,6 +793,41 @@ class AgentTrainingLoop:
             new_labeled = sum(1 for img in all_images if (lbl_dir / f"{img.stem}.txt").exists() and (lbl_dir / f"{img.stem}.txt").stat().st_size > 0)
             analysis_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 补充后统计: {new_labeled}/{len(all_images)} 张已标注")
 
+            # ========== 补充标注后再次让用户确认 ==========
+            # 构建确认 iteration
+            class _AutoLabelConfirmIter:
+                def __init__(self, task_id, logs):
+                    self.iteration_id = f"{task_id}_auto_label_confirm"
+                    self.llm_analysis = f"自动标注完成，已补充标注 {new_labeled - final_labeled} 张图片"
+                    self.logs = logs
+                def to_dict(self):
+                    return {
+                        "iteration_id": self.iteration_id,
+                        "config": {"phase": "auto_label_confirm"},
+                        "status": "user_decision",
+                        "logs": self.logs,
+                        "metrics": {},
+                    }
+            confirm_iter = _AutoLabelConfirmIter(self.task_id, analysis_logs)
+
+            # 确认选项：只有"开始训练"和"停止"
+            confirm_options = [
+                {"value": "proceed", "label": "🚀 开始训练", "desc": f"使用 {new_labeled} 张已标注图片开始训练"},
+                {"value": "stop", "label": "⏹️ 暂停", "desc": "先完善数据集，稍后再训练"},
+            ]
+
+            confirm_choice = self._request_user_decision(
+                llm_analysis=f"✅ 自动标注完成！已补充 {new_labeled - final_labeled} 张图片，当前 {new_labeled}/{len(all_images)} 张已标注",
+                options=confirm_options,
+                iteration=confirm_iter,
+                progress_callback=progress_callback,
+            )
+
+            if confirm_choice == "stop":
+                self.status = "stopped"
+                return self._build_final_result()
+            # proceed 则继续正常训练流程
+
         # 继续正常流程：生成 data.yaml ...
         analysis_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🚀 用户确认，开始训练...")
 
@@ -873,6 +947,16 @@ names: {self.class_names}
 
     def _build_final_result(self) -> Dict[str, Any]:
         """构建最终结果"""
+        # 找到实际存在的模型文件（优先 best.pt，其次 last.pt）
+        best_model = self.output_dir / "weights" / "best.pt"
+        last_model = self.output_dir / "weights" / "last.pt"
+
+        final_model_path = None
+        if best_model.exists():
+            final_model_path = str(best_model)
+        elif last_model.exists():
+            final_model_path = str(last_model)
+
         return {
             "task_id": self.task_id,
             "status": self.status,
@@ -880,7 +964,7 @@ names: {self.class_names}
             "best_iteration_id": self.best_iteration_id,
             "best_metrics": self.best_metrics,
             "iterations": [it.to_dict() for it in self.iterations],
-            "final_model_path": str(self.output_dir / "weights" / "best.pt"),
+            "final_model_path": final_model_path,
         }
 
 
@@ -934,11 +1018,6 @@ def resume_agent_training_loop(task_id: str) -> bool:
         loop.status = "running"
         return True
     return False
-
-
-def get_agent_training_loop(task_id: str):
-    """获取运行中的训练循环"""
-    return _active_loops.get(task_id)
 
 
 def submit_user_decision(task_id: str, decision: str) -> bool:

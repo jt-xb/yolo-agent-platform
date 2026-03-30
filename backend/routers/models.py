@@ -216,16 +216,25 @@ def download_model(task_id: str, db: Session = Depends(get_db)):
     if not model:
         raise HTTPException(status_code=404, detail="模型不存在")
 
-    model_path = settings.models_dir / task_id / "weights" / "best.pt"
+    # 使用数据库中存储的实际模型路径
+    model_path = Path(model.model_path) if model.model_path else None
 
-    if not model_path.exists():
-        # 返回一个模拟文件
-        return {"success": False, "message": "模型文件不存在"}
+    # 如果数据库路径不存在，尝试构造路径
+    if not model_path or not model_path.exists():
+        model_path = settings.models_dir / task_id / "weights" / "best.pt"
+        if not model_path.exists():
+            model_path = settings.models_dir / task_id / "weights" / "last.pt"
+
+    if not model_path or not model_path.exists():
+        raise HTTPException(status_code=404, detail="模型文件不存在，请先完成训练")
+
+    # 提取文件名用于下载
+    filename = model_path.name or f"{task_id}.pt"
 
     return FileResponse(
         str(model_path),
         media_type="application/octet-stream",
-        filename=f"{task_id}_best.pt"
+        filename=filename
     )
 
 

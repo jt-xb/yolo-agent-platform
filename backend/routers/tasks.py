@@ -314,12 +314,32 @@ def _run_regular_training_background(task_id: str, dataset_id: str = None, pretr
         loop.status = "training"
 
         # 注册 epoch 回调，流式推送每轮结果
-        def on_epoch_end_cb(trainer):
+        # 使用 Trainer 的 callbacks 而非 model 的 callbacks（更可靠）
+        def on_epoch_end_callback(trainer, metrics):
+            """在每个 epoch 结束时被调用，流式推送指标"""
             epoch = trainer.epoch
             total = trainer.epochs
-            metrics_dict = getattr(trainer, 'metrics', {})
-            map50_ep = metrics_dict.get('metrics/mAP50(B)', 0.0)
+
+            # 从 trainer 自身的属性获取 metrics
+            metrics_dict = getattr(trainer, 'metrics', {}) or {}
+            if not isinstance(metrics_dict, dict):
+                metrics_dict = {}
+
+            # 尝试多个可能的 key 名称（兼容不同版本的 ultralytics）
+            map50_ep = (metrics_dict.get('metrics/mAP50(B)')
+                       or metrics_dict.get('map50')
+                       or metrics_dict.get('mAP50', 0.0))
             loss_ep = metrics_dict.get('train/box_loss', 0.0)
+            if not loss_ep:
+                loss_ep = getattr(trainer, 'loss', 0.0)
+
+            # 确保是浮点数
+            try:
+                map50_ep = float(map50_ep) if map50_ep else 0.0
+                loss_ep = float(loss_ep) if loss_ep else 0.0
+            except (ValueError, TypeError):
+                map50_ep = loss_ep = 0.0
+
             log_msg = f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Epoch {epoch+1}/{total}: loss={loss_ep:.4f}, mAP50={map50_ep:.4f}"
             # 直接发送 SSE 事件（线程安全）
             emit_task_event(task_id, "log", {
@@ -337,7 +357,7 @@ def _run_regular_training_background(task_id: str, dataset_id: str = None, pretr
                 "loss": loss_ep,
                 "progress": int((epoch + 1) / total * 100),
             })
-        model.callbacks['on_fit_epoch_end'].append(on_epoch_end_cb)
+        model.callbacks['on_fit_epoch_end'].append(on_epoch_end_callback)
 
         results = model.train(
             data=str(data_yaml),
@@ -379,13 +399,26 @@ def _run_regular_training_background(task_id: str, dataset_id: str = None, pretr
             task.precision = precision_val
             task.recall = recall_val
             task.completed_at = datetime.utcnow()
-            # 找到输出模型路径
+            # 找到输出模型路径（优先 best.pt，其次 last.pt）
             best_model = settings.models_dir / task_id / "weights" / "best.pt"
+            last_model = settings.models_dir / task_id / "weights" / "last.pt"
+
             if best_model.exists():
                 task.output_model_path = str(best_model)
-            last_model = settings.models_dir / task_id / "weights" / "last.pt"
-            if last_model.exists() and not task.output_model_path:
+            elif last_model.exists():
                 task.output_model_path = str(last_model)
+
+            # 获取真实文件大小
+            model_file_size = "unknown"
+            if task.output_model_path and os.path.exists(task.output_model_path):
+                size_bytes = os.path.getsize(task.output_model_path)
+                if size_bytes > 1024 * 1024 * 1024:
+                    model_file_size = f"{size_bytes / (1024*1024*1024):.1f} GB"
+                elif size_bytes > 1024 * 1024:
+                    model_file_size = f"{size_bytes / (1024*1024):.1f} MB"
+                else:
+                    model_file_size = f"{size_bytes / 1024:.1f} KB"
+
             db.commit()
 
             _create_task_log(db, task_id, "info", f"🎉 训练完成！mAP50={map50:.4f}")
@@ -400,7 +433,7 @@ def _run_regular_training_background(task_id: str, dataset_id: str = None, pretr
                     name=task.name,
                     model_path=task.output_model_path,
                     model_type="yolov8",
-                    file_size="45.2 MB",
+                    file_size=model_file_size,
                     map50=map50,
                     map50_95=map50_95,
                 )
