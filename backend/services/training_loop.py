@@ -210,17 +210,17 @@ class AgentTrainingLoop:
             model = YOLO(model_path)
 
             # 注册 epoch 回调，流式推送每轮结果
-            # 使用更可靠的 Trainer's callbacks 而非 model's callbacks
+            # ultralytics 的 on_fit_epoch_end 回调只接收 trainer 一个参数
             if progress_callback:
                 _self = self  # 闭包捕获
                 _iteration = iteration
 
-                def on_epoch_end_callback(trainer, metrics):
+                def on_epoch_end_callback(trainer):
                     """在每个 epoch 结束时被调用，流式推送指标"""
                     epoch = trainer.epoch
                     total = trainer.epochs
 
-                    # 从 trainer 自身的属性获取 metrics（更可靠）
+                    # 从 trainer 自身的属性获取 metrics
                     metrics_dict = getattr(trainer, 'metrics', {}) or {}
                     if not isinstance(metrics_dict, dict):
                         metrics_dict = {}
@@ -277,9 +277,6 @@ class AgentTrainingLoop:
                     except Exception as e:
                         iteration.logs.append(f"回调错误: {str(e)}")
 
-                # 注册到 Trainer 的 callbacks（在 model.train() 调用前注册）
-                # ultralytics 会在内部创建 Trainer 并使用这些 callbacks
-                from ultralytics.utils.callbacks import callbacks as cb_registry
                 model.callbacks['on_fit_epoch_end'].append(on_epoch_end_callback)
 
             # Pause check before training

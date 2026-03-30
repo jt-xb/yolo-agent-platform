@@ -314,8 +314,8 @@ def _run_regular_training_background(task_id: str, dataset_id: str = None, pretr
         loop.status = "training"
 
         # 注册 epoch 回调，流式推送每轮结果
-        # 使用 Trainer 的 callbacks 而非 model 的 callbacks（更可靠）
-        def on_epoch_end_callback(trainer, metrics):
+        # ultralytics 的 on_fit_epoch_end 回调只接收 trainer 一个参数
+        def on_epoch_end_callback(trainer):
             """在每个 epoch 结束时被调用，流式推送指标"""
             epoch = trainer.epoch
             total = trainer.epochs
@@ -350,7 +350,7 @@ def _run_regular_training_background(task_id: str, dataset_id: str = None, pretr
             })
             # 推送进度
             emit_task_event(task_id, "metrics", {
-                "type": "metric",
+                "type": "metrics",
                 "epoch": epoch + 1,
                 "total_epochs": total,
                 "map50": map50_ep,
