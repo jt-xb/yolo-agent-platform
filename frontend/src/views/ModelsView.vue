@@ -91,6 +91,12 @@
               </el-dropdown-menu>
             </template>
           </el-dropdown>
+          <el-button size="small" @click="downloadPt(model)">
+            下载pt
+          </el-button>
+          <el-button type="danger" text size="small" @click="deleteModel(model)">
+            删除
+          </el-button>
         </div>
       </div>
     </div>
@@ -174,10 +180,10 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import StatusBadge from '../components/common/StatusBadge.vue'
 import EmptyState from '../components/common/EmptyState.vue'
-import { getModels, deployModel as apiDeploy, undeployModel as apiUndeploy, inferModel, inferModelImage } from '../api/models'
+import { getModels, deployModel as apiDeploy, undeployModel as apiUndeploy, inferModel, inferModelImage, deleteModel as apiDeleteModel, exportModel as apiExportModel, downloadModel } from '../api/models'
 
 const models = ref([])
 const loading = ref(false)
@@ -280,12 +286,33 @@ async function runInferFile() {
 }
 
 async function exportModel(model, format) {
-  ElMessage.info(`正在导出 ${format.toUpperCase()} 格式...`)
   try {
-    await window.open(`/api/models/${model.task_id}/export?format=${format}`, '_blank')
+    const data = await apiExportModel(model.task_id, format)
+    if (data.success && data.download_url) {
+      location.href = data.download_url
+    } else {
+      ElMessage.error(data.message || '导出失败')
+    }
   } catch (e) {
     ElMessage.error('导出失败: ' + e.message)
   }
+}
+
+async function deleteModel(model) {
+  try {
+    await ElMessageBox.confirm(`确定要删除模型"${model.name || model.task_id}"吗？`, '删除确认', { type: 'warning' })
+    await apiDeleteModel(model.task_id)
+    ElMessage.success('删除成功')
+    await loadModels()
+  } catch (e) {
+    if (e !== 'cancel') {
+      ElMessage.error('删除失败: ' + e.message)
+    }
+  }
+}
+
+function downloadPt(model) {
+  location.href = `/api/models/${model.task_id}/download`
 }
 
 function mapClass(val) {
