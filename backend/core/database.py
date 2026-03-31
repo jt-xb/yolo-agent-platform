@@ -9,12 +9,22 @@ from sqlalchemy.pool import StaticPool
 
 from backend.core.config import settings
 
-# 创建数据库引擎
-engine = create_engine(
-    settings.database_url,
-    connect_args={"check_same_thread": False},  # SQLite 需要
-    poolclass=StaticPool,  # SQLite 单线程用
-)
+# 根据数据库类型配置引擎
+if settings.database_url.startswith("sqlite"):
+    # SQLite 配置
+    engine = create_engine(
+        settings.database_url,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+else:
+    # MySQL/其他数据库配置
+    engine = create_engine(
+        settings.database_url,
+        pool_size=10,
+        max_overflow=20,
+        pool_pre_ping=True,
+    )
 
 # 创建 Session 工厂
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

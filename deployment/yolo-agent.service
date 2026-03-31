@@ -1,0 +1,42 @@
+# YOLO自动化训推平台 - Systemd 服务配置
+#
+# 使用方法:
+#   1. 复制到 /etc/systemd/system/yolo-agent.service
+#   2. 修改 WorkingDirectory 和 ExecStart 中的路径
+#   3. 执行:
+#      sudo systemctl daemon-reload
+#      sudo systemctl enable yolo-agent
+#      sudo systemctl start yolo-agent
+#
+
+[Unit]
+Description=YOLO Automation Training Platform
+After=network.target mysql.service  # 如果使用MySQL，添加 mysql.service
+Wants=mysql.service  # 如果使用MySQL
+
+[Service]
+Type=simple
+User=your_user
+Group=your_group
+WorkingDirectory=/path/to/yolo-agent-platform/backend
+Environment="PYTHONPATH=/path/to/yolo-agent-platform"
+Environment="PATH=/usr/bin:/usr/local/bin"
+
+# 启动命令
+ExecStart=/usr/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
+
+# 重启配置
+Restart=always
+RestartSec=10
+
+# 日志配置
+StandardOutput=append:/var/log/yolo-agent/std.log
+StandardError=append:/var/log/yolo-agent/error.log
+SyslogIdentifier=yolo-agent
+
+# 安全配置（可选）
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
