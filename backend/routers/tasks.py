@@ -56,19 +56,25 @@ def _close_queue(task_id: str):
 
 
 @router.get("/{task_id}/stream")
-async def stream_task_events(task_id: str, db: Session = Depends(get_db)):
+async def stream_task_events(task_id: str):
     """
     SSE 实时流：推送训练日志、指标、状态更新
     每个任务 ID 独立队列，第二次打开也能正常接收。
     """
+    # 先关闭旧的队列（如果存在）
+    _close_queue(task_id)
+
+    # 重新创建新队列
     q, ev = _get_or_create_queue(task_id)
 
     async def event_generator():
         yield "event: connected\ndata: \n\n"
+        last_heartbeat = time.time()
         try:
             while True:
                 try:
-                    item = q.get(timeout=60)
+                    item = q.get(timeout=5)
+                    last_heartbeat = time.time()
                 except sync_queue.Empty:
                     yield "event: heartbeat\ndata: \n\n"
                     continue
@@ -302,21 +308,22 @@ def _run_regular_training_background(task_id: str, dataset_id: str = None, pretr
                 map50_ep = loss_ep = 0.0
 
             progress_pct = int((epoch + 1) / total * 100)
-            ts = datetime.now().isoformat()
-            log_msg = f"[{datetime.now().strftime('%H:%M:%S')}] Epoch {epoch+1}/{total}: loss={loss_ep:.4f}, mAP50={map50_ep:.4f}"
+            now = datetime.now()  # 统一时间戳
+            ts = now.isoformat()
+            log_msg = f"[{now.strftime('%H:%M:%S')}] Epoch {epoch+1}/{total}: loss={loss_ep:.4f}, mAP50={map50_ep:.4f}"
 
             # 写 DB（保证 getTaskLogs 能查到完整日志）
             db2 = SessionLocal()
             try:
                 metric = TaskMetric(
-                    task_id=task_id, epoch=epoch + 1, iteration=epoch + 1,
+                    task_id=task_id, epoch=epoch + 1,
                     map50=map50_ep, map50_95=0.0,
                     train_loss=loss_ep, val_loss=0.0,
                 )
                 db2.add(metric)
                 db2.commit()
 
-                log = TaskLog(task_id=task_id, level="info", message=log_msg, timestamp=datetime.now())
+                log = TaskLog(task_id=task_id, level="info", message=log_msg, timestamp=now)
                 db2.add(log)
                 db2.commit()
             finally:
@@ -330,7 +337,7 @@ def _run_regular_training_background(task_id: str, dataset_id: str = None, pretr
             emit_task_event(task_id, "metrics", {
                 "type": "metrics",
                 "epoch": epoch + 1, "total_epochs": total,
-                "map50": map50_ep, "loss": loss_ep,
+                "map50": map50_ep, "loss": loss_ep, "train_loss": loss_ep,
                 "progress": progress_pct,
             })
             emit_task_event(task_id, "status", {
@@ -447,7 +454,7 @@ def create_task(request: dict, db: Session = Depends(get_db)):
     dataset_id = request.get("dataset_id", "")
     data_path = str(settings.data_dir / "datasets" / dataset_id) if dataset_id else request.get("data_path", "")
     pretrained_model = request.get("pretrained_model", "")
-    training_type = request.get("training_type", "agent")
+    training_type = request.get("training_type", "regular")
 
     task = Task(
         task_id=task_id,

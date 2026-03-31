@@ -43,8 +43,7 @@
         <div class="task-meta">
           <span class="meta-item" v-if="task.yolo_model">{{ task.yolo_model }}</span>
           <span class="meta-item" v-if="task.epochs">{{ task.epochs }} epochs</span>
-          <span class="meta-item" v-if="task.training_type === 'agent'">🤖 Agent</span>
-          <span class="meta-item" v-else>⚡ 常规</span>
+          <span class="meta-item">⚡ 常规</span>
         </div>
 
         <div class="task-progress" v-if="task.status === 'training'">
@@ -122,17 +121,6 @@
         <el-form-item label="任务名称">
           <el-input v-model="createForm.name" placeholder="例如：安全帽检测" />
         </el-form-item>
-        <el-form-item label="训练类型">
-          <el-radio-group v-model="createForm.trainingType" size="small">
-            <el-radio-button value="regular">⚡ 常规训练</el-radio-button>
-            <el-radio-button value="agent">🤖 Agent 智能迭代</el-radio-button>
-          </el-radio-group>
-          <div class="form-tip">
-            {{ createForm.trainingType === 'regular'
-              ? '选定数据集和模型，一次性训练完成，适合快速验证'
-              : '自动评估效果，迭代优化参数，直到达到阈值，适合追求精度' }}
-          </div>
-        </el-form-item>
         <el-form-item label="数据集">
           <el-select v-model="createForm.datasetId" style="width: 100%">
             <el-option v-for="ds in datasets" :key="ds.id" :label="ds.name" :value="ds.id" />
@@ -170,7 +158,6 @@
       v-model="showDetailDialog"
       :title="selectedTask?.name || '任务详情'"
       width="860px"
-      destroy-on-close
       @closed="onDetailClosed"
     >
       <div class="detail-content" v-if="selectedTask">
@@ -179,8 +166,7 @@
           <div class="detail-row">
             <span class="detail-label">状态</span>
             <StatusBadge :status="selectedTask.status" />
-            <span class="meta-item" style="margin-left:8px" v-if="selectedTask.training_type === 'agent'">🤖 Agent</span>
-            <span class="meta-item" style="margin-left:8px" v-else>⚡ 常规</span>
+            <span class="meta-item" style="margin-left:8px">⚡ 常规训练</span>
           </div>
           <div class="detail-row" v-if="selectedTask.progress > 0">
             <span class="detail-label">进度</span>
@@ -196,9 +182,12 @@
 
         <!-- 实时指标卡（流式） -->
         <div class="detail-section" v-if="liveMetrics.length">
-          <h4 class="section-subtitle">📊 实时指标</h4>
+          <h4 class="section-subtitle">
+            📊 实时指标
+            <span class="log-count" v-if="liveMetrics.length > 20">(显示最后20轮)</span>
+          </h4>
           <div class="metrics-grid">
-            <div class="metric-card" v-for="m in liveMetrics.slice(-12)" :key="m.epoch">
+            <div class="metric-card" v-for="m in liveMetrics.slice(-20)" :key="m.epoch">
               <div class="mc-epoch">Epoch {{ m.epoch }}/{{ m.total || selectedTask.epochs }}</div>
               <div class="mc-val">
                 <span class="mc-label">mAP50</span>
@@ -208,7 +197,7 @@
               </div>
               <div class="mc-val">
                 <span class="mc-label">Loss</span>
-                <span class="mc-value">{{ m.loss != null ? m.loss.toFixed(3) : '-' }}</span>
+                <span class="mc-value">{{ (m.loss ?? m.train_loss) != null ? (m.loss ?? m.train_loss).toFixed(3) : '-' }}</span>
               </div>
             </div>
           </div>
@@ -216,11 +205,10 @@
 
         <!-- 迭代历史 -->
         <div class="detail-section" v-if="iterations.length">
-          <h4 class="section-subtitle">迭代历史</h4>
+          <h4 class="section-subtitle">训练历史</h4>
           <el-table :data="iterations" size="small" max-height="200">
-            <el-table-column prop="iteration" label="迭代" width="60" />
+            <el-table-column prop="epoch" label="Epoch" width="70" />
             <el-table-column prop="yolo_model" label="模型" />
-            <el-table-column prop="epochs" label="Epochs" width="70" />
             <el-table-column label="mAP@50" width="90">
               <template #default="{ row }">
                 <span :class="mapClass(row.metrics?.map50)">
@@ -228,14 +216,9 @@
                 </span>
               </template>
             </el-table-column>
-            <el-table-column prop="decision" label="决策">
+            <el-table-column label="Loss" width="80">
               <template #default="{ row }">
-                <span v-if="row.decision === 'pass'">✅ 达标</span>
-                <span v-else-if="row.decision === 'fail_retry'">🔄 调整重试</span>
-                <span v-else-if="row.decision === 'fail_stop'">❌ 失败停止</span>
-                <span v-else-if="row.decision === 'max_iteration'">⏹️ 达上限</span>
-                <span v-else-if="row.decision === 'user_decision'">👤 用户决策</span>
-                <span v-else>{{ row.decision || '-' }}</span>
+                {{ row.metrics?.loss != null ? row.metrics.loss.toFixed(3) : '-' }}
               </template>
             </el-table-column>
           </el-table>
@@ -318,7 +301,6 @@ const createForm = ref({
   datasetId: 'demo',
   yoloModel: 'yolov8n',
   epochs: 100,
-  trainingType: 'regular',
 })
 
 // ============================================
@@ -364,11 +346,10 @@ async function createTask() {
       dataset_id: createForm.value.datasetId,
       yolo_model: createForm.value.yoloModel,
       epochs: createForm.value.epochs,
-      training_type: createForm.value.trainingType,
     })
     ElMessage.success('任务创建成功')
     showCreateDialog.value = false
-    createForm.value = { name: '', description: '', classes: '', datasetId: createForm.value.datasetId || 'demo', yoloModel: 'yolov8n', epochs: 100, trainingType: 'regular' }
+    createForm.value = { name: '', description: '', classes: '', datasetId: createForm.value.datasetId || 'demo', yoloModel: 'yolov8n', epochs: 100 }
     await loadTasks()
   } catch (e) {
     ElMessage.error('创建失败: ' + e.message)
@@ -447,6 +428,10 @@ function closeDetail() {
     clearInterval(logPollingTimer)
     logPollingTimer = null
   }
+  // 如果 dialog 正在显示中（被 openDetail 重新打开了），不清理状态
+  if (showDetailDialog.value) {
+    return
+  }
   showDetailDialog.value = false
   selectedTask.value = null
   detailTaskId.value = null
@@ -473,16 +458,24 @@ async function openDetail(task) {
 
   // 加载历史数据（从 DB）
   try {
+    console.log('[DEBUG] openDetail called, task_id:', task.task_id)
     const [mData, iData, lData] = await Promise.all([
       getTaskMetrics(task.task_id).catch(() => ({ metrics: [] })),
       getTaskIterations(task.task_id).catch(() => ({ iterations: [] })),
-      getTaskLogs(task.task_id, 100).catch(() => ({ logs: [] })),
+      getTaskLogs(task.task_id, 100).catch(() => {
+        console.log('[DEBUG] getTaskLogs failed')
+        return { logs: [] }
+      }),
     ])
+    console.log('[DEBUG] getTaskLogs response:', lData, 'logs length:', lData?.logs?.length, 'task_id:', task.task_id)
     liveMetrics.value = mData.metrics || []
     iterations.value = iData.iterations || []
     logs.value = lData.logs || []
+    console.log('[DEBUG] logs.value after assignment:', logs.value.length, 'showDetailDialog:', showDetailDialog.value)
     scrollLogToBottom()
-  } catch {}
+  } catch (e) {
+    console.error('[DEBUG] Error loading history:', e)
+  }
 
   // 启动 SSE 流（实时接收新数据）
   startSSEStream(task.task_id)
